@@ -1,0 +1,693 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 7: the calc-admin lifecycle in miniature (file 09)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-7-the-calc-admin-lifecycle-in-miniature-file-09">Lab 7: the calc-admin lifecycle in miniature (file 09)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 7 | <strong>File no:</strong> 09 | <strong>Time:</strong> 2 to 2.5 h | <strong>Prerequisites:</strong> file 06 (Lab 4); file 08 (Lab 6) is optional | <strong>Modes supported:</strong> H or S, D (standard stand-ins run the whole lab, with a table of what differs) | <strong>Leaves behind:</strong> app-role grants verified; <code>V5</code> applied (Mode H) or a documented no-op (Mode S); <code>SP_ACTIVATE_DRAFT_CALCULATION</code> v2 with the event-first bracket deployed through DCM; audit rows exist.</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>Learn the calc-admin side of the platform by building its lifecycle objects in miniature and using them with least-privilege roles.</p>
+<p>By the end you can:</p>
+<ul>
+<li>show that an app role with DML only can read and write rows but cannot change the schema;</li>
+<li>explain what a hybrid table adds over a standard table (enforced primary key, row-level locks) and prove it, or, in Mode S, prove the contrast;</li>
+<li>explain why the application must not run migrations when it starts, and what NAIC's pipeline-first design does instead;</li>
+<li>tell the "baseline INT, create QA and PROD for real" story and check the shape that makes a baseline safe;</li>
+<li>run an event-first audit bracket (PENDING event, engine call, COMPLETE event) and compare it with today's action-first approach;</li>
+<li>compare the live two-table model with the proposed five-table design in ADR-0026 in plain terms.</li>
+</ul>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world (NAIC).</strong> Calc Admin is the application that lets people draft, review, approve and activate calculations. The engine only knows calc states <code>DRAFT</code>, <code>ACTIVE</code> and <code>INACTIVE</code>. Calc Admin adds its own workflow states (<code>DRAFT</code>, <code>IN_REVIEW</code>, <code>APPROVED</code>, <code>ACTIVE</code>, <code>DISCARDED</code>) in its own tables, and records an audit trail.</p>
+<p>Two hybrid tables, <code>CALC_WORKFLOW_STATUS</code> (one row per calc) and <code>CALC_AUDIT_EVENT</code> (append-only), were created by hand in Snowsight in INT on 2026-11-03, in the engine's schema <code>COMMON_INT.CALCULATION_SUPPORT</code>, owned by <code>CICD_PIPELINE</code>. They do not exist in QA or PROD, and there is no DDL for them in Git. The runtime role <code>FN_NAIC_CALC_ENGINE_NP</code> (used by the service identity) has DML only: all of <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> on the status table and <code>INSERT</code> only on the audit table, because the audit trail is append-only. On the first day the role could not see the sequence that feeds <code>EVENT_ID</code> until <code>USAGE</code> was granted.</p>
+<p>The target design (<code>calc-admin-with-flyway.html</code>) puts a dedicated lifecycle schema under Flyway, run by a pipeline job with an owner identity. The application role gets DML only and never runs migrations. ADR-0026 (status Proposed) goes further: five tables and two sequences, one hybrid lock table, and an event-first audit.</p>
+<p>The other Calc Admin precedent is fpr-admin, a PostgreSQL service that runs Flyway itself when Spring Boot starts. You will contrast the two.</p>
+<p>Note on sources: the original DDL file for the two live tables was not found in any repository. The shapes in the sandbox are reconstructed from documentation, not copied.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>, warehouse <code>SBX_CALC_WH</code>).</p>
+<pre><code class="language-sql">SHOW TABLES LIKE 'CALC_%' IN SCHEMA SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see <code>CALC_WORKFLOW_STATUS</code>, <code>CALC_AUDIT_EVENT</code> and <code>CALC_CATEGORIES</code>. In the <code>is_hybrid</code> column the first two say <code>Y</code> in Mode H and <code>N</code> in Mode S. (The column name is lower-case in <code>SHOW</code> output.)</p>
+<pre><code class="language-sql">SELECT &quot;version&quot;, &quot;description&quot;, &quot;success&quot;
+FROM SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT ORDER BY &quot;installed_rank&quot;;
+</code></pre>
+<p>You should see versions 1 to 4, all successful. (Column names: see TC-08-08.)</p>
+<pre><code class="language-sql">SHOW GRANTS TO ROLE SBX_FN_CALC_ENGINE_NP;
+</code></pre>
+<p>You should see <code>SELECT, INSERT, UPDATE, DELETE</code> on <code>CALC_WORKFLOW_STATUS</code>, and only <code>SELECT</code> and <code>INSERT</code> on <code>CALC_AUDIT_EVENT</code>.</p>
+<p>If the tables are missing, finish Lab 4 first (file 06). If the grants differ, read file 06 step "grants in the migrations", fix with a new migration, never by editing an applied one.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>Lifecycle objects.</strong> The tables a UI uses to track where each calculation is in its review (status, who did what, when). They are separate from the engine's content tables. In the sandbox: <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code>.</p>
+<p><strong>Hybrid table.</strong> A Snowflake table stored by row, made for many small reads and writes. It has a mandatory, enforced primary key, row-level locks, and secondary indexes. Standard tables are stored by column, are fast for scans, lock at coarser levels, and do not enforce primary or unique keys (only <code>NOT NULL</code>).</p>
+<p><strong>Row-level locking.</strong> Two sessions can update two different rows at the same time. On a standard table, an update to the table blocks other updates to it until the first transaction ends.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> Hybrid tables use a row store and row-level locking, unlike partition-level or table-level locking for standard tables; the primary key is mandatory and enforced; secondary indexes can be created with <code>CREATE INDEX</code> (https://docs.snowflake.com/en/user-guide/tables-hybrid and .../tables-hybrid-limitations and .../sql-reference/sql/create-hybrid-table, read 2026-11-16).</p>
+</blockquote>
+<p><strong>Least privilege.</strong> Each identity gets only the rights it needs. Here three roles:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Used by</th>
+<th>Can</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SBX_CICD_PIPELINE</code></td>
+<td>migration pipeline, owner</td>
+<td>create, alter, drop. Owns the tables and sequences.</td>
+</tr>
+<tr>
+<td><code>SBX_FN_CALC_ENGINE_NP</code></td>
+<td>the application at run time</td>
+<td>DML only. No DDL. On the audit table, <code>INSERT</code> and <code>SELECT</code> only.</td>
+</tr>
+<tr>
+<td><code>SBX_CALC_READER</code></td>
+<td>reporting</td>
+<td><code>SELECT</code> only.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Owner's rights and caller's rights.</strong> A stored procedure declared <code>EXECUTE AS OWNER</code> runs with the owner's privileges, not the caller's. A caller who may only call the procedure can cause writes the caller could not do directly. That is both the reason to use it (controlled writes) and a risk (the procedure must validate its inputs).</p>
+<p><strong>Action-first audit (today).</strong> The application calls the engine, then writes an audit row. If the audit write fails after the engine call, the change has no record.</p>
+<p><strong>Event-first audit (ADR-0026).</strong> The application writes a <code>PENDING</code> event first, then calls the engine, then completes the event. If the process dies in the middle, a <code>PENDING</code> event with no outcome remains, which says "something may have happened here, reconcile". Nothing is silently unrecorded.</p>
+<p><strong>Migrations at startup versus in a pipeline.</strong> In fpr-admin the application itself runs Flyway when it starts. In the target for Calc Admin, a pipeline job runs Flyway under an owner identity before the application starts. The application only checks that the schema it expects is there.</p>
+<p><strong>Baseline.</strong> Telling Flyway "the objects up to version N already exist, start counting after N". It is how a database created by hand is adopted. It is only safe if the live shape equals what the scripts up to N would have created.</p>
+<h3 id="41-the-sandbox-objects">4.1 The sandbox objects</h3>
+<pre><code> SBX_INT.CALC_SUPPORT
+   SEQ_WORKFLOW_ID ---default---&gt;  CALC_WORKFLOW_STATUS   (hybrid in Mode H)
+   SEQ_AUDIT_EVENT_ID -default--&gt;  CALC_AUDIT_EVENT       (hybrid in Mode H, append-only for the app role)
+   CALCULATIONS (DCM)   SP_ACTIVATE_DRAFT_CALCULATION (DCM, EXECUTE AS OWNER)
+
+ owner role      SBX_CICD_PIPELINE   : DDL, owns all of the above
+ app role        SBX_FN_CALC_ENGINE_NP: DML only
+ read role       SBX_CALC_READER      : SELECT only
+</code></pre>
+<h3 id="42-what-differs-in-mode-s">4.2 What differs in Mode S</h3>
+<table>
+<thead>
+<tr>
+<th>Behaviour</th>
+<th>Mode H (hybrid)</th>
+<th>Mode S (standard stand-ins)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Duplicate primary key</td>
+<td>second insert fails</td>
+<td>both rows are stored (PK is not enforced)</td>
+</tr>
+<tr>
+<td>Locking in two sessions</td>
+<td>different rows do not block each other</td>
+<td>any update on the table waits for the other transaction</td>
+</tr>
+<tr>
+<td>Secondary index</td>
+<td><code>V5</code> creates <code>IDX_AUDIT_EVENT_TYPE</code></td>
+<td><code>V5</code> is a documented no-op</td>
+</tr>
+<tr>
+<td>Everything else in this lab</td>
+<td>same</td>
+<td>same</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-01]:</strong> The exact error text for a duplicate key on a hybrid table. The docs say the key is enforced. How to check at lab time: run step 5.3 in Mode H and paste the message. Record the result in file 13.</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-51-act-as-the-app-role-and-see-what-it-may-do">Step 5.1 Act as the app role and see what it may do</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>. Use one worksheet for all of 5.1 to 5.3. Your user holds all four sandbox roles, so you can switch.</p>
+<pre><code class="language-sql">USE ROLE SBX_FN_CALC_ENGINE_NP;
+USE WAREHOUSE SBX_CALC_WH;
+SELECT CURRENT_ROLE();          -- SBX_FN_CALC_ENGINE_NP
+
+-- allowed: DML on the status table
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 2001, 'DRAFT', CURRENT_USER(), CURRENT_TIMESTAMP();
+
+UPDATE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS
+SET ADMIN_STATUS = 'IN_REVIEW', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CALC_ID = 2001;
+
+-- allowed: append to the audit table
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+SELECT 2001, 'SUBMIT', 'COMPLETE', CURRENT_USER(), CURRENT_TIMESTAMP();
+
+SELECT * FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT ORDER BY EVENT_ID DESC LIMIT 5;
+</code></pre>
+<p>You should see: both inserts succeed, the update affects 1 row, and the audit table has your row with an <code>EVENT_ID</code> that came from <code>SEQ_AUDIT_EVENT_ID</code> without you supplying it.</p>
+<p>Now try what the app role must not do. Each statement should fail with an insufficient-privileges error.</p>
+<pre><code class="language-sql">UPDATE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT SET EVENT_STATUS = 'COMPLETE' WHERE CALC_ID = 2001;   -- audit is append-only
+DELETE FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT WHERE CALC_ID = 2001;                              -- no delete
+TRUNCATE TABLE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;                                           -- no truncate
+ALTER TABLE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS ADD COLUMN SNEAKY VARCHAR;                     -- no DDL
+CREATE TABLE SBX_INT.CALC_SUPPORT.APP_MADE_THIS (ID NUMBER);                                         -- no create
+</code></pre>
+<p>You should see: five errors that say the role lacks a privilege or the object cannot be accessed. (Exact text is not asserted in this pack.)</p>
+<p>Checkpoint: the app role can insert a status row. Can it run Flyway? Think before reading section 5.6.</p>
+<h3 id="step-52-read-only-role">Step 5.2 Read-only role</h3>
+<pre><code class="language-sql">USE ROLE SBX_CALC_READER;
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;      -- works
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 9999, 'DRAFT', 'reader', CURRENT_TIMESTAMP();                  -- fails
+</code></pre>
+<p>You should see: the count works, the insert fails.</p>
+<h3 id="step-53-enforced-primary-key">Step 5.3 Enforced primary key</h3>
+<p>The primary key of the sandbox status table is <code>WORKFLOW_ID</code>. Use the owner role for this test so the setup is not the point.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 90001, 2002, 'DRAFT', 'pk-test', CURRENT_TIMESTAMP();
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 90001, 2002, 'DRAFT', 'pk-test', CURRENT_TIMESTAMP();     -- same key again
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS WHERE WORKFLOW_ID = 90001;
+</code></pre>
+<p>You should see in <strong>Mode H</strong>: the second insert fails with a duplicate key error (TC-09-01) and the count is 1.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables">If you are in Mode S (no hybrid tables)</h4>
+<p>You should see: both inserts succeed and the count is <strong>2</strong>. A standard table keeps informational keys only. This is the point of the contrast: the real calc-admin service has to catch duplicate-key errors on create races (the live design retries a <code>MERGE</code> once as an update), and that only works because the database enforces the key.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> Hybrid tables enforce primary key, unique, foreign key, check and not-null constraints. Standard tables enforce only <code>NOT NULL</code> (https://docs.snowflake.com/en/user-guide/tables-hybrid-limitations and the pack's contract, read 2026-11-16).</p>
+</blockquote>
+<p>Clean the test rows:</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS WHERE WORKFLOW_ID = 90001;
+</code></pre>
+<h3 id="step-54-row-level-locking-with-two-sessions">Step 5.4 Row-level locking with two sessions</h3>
+<p>Run in: <strong>two Snowsight worksheets</strong> side by side, called A and B. Each worksheet is its own session. Both use role <code>SBX_CICD_PIPELINE</code> and warehouse <code>SBX_CALC_WH</code>.</p>
+<p>First, in both worksheets, set a short lock wait. Without it a blocked statement waits up to the account default, which can be hours.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+ALTER SESSION SET LOCK_TIMEOUT = 20;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-02]:</strong> <code>ALTER SESSION SET LOCK_TIMEOUT</code> (seconds), and the claim that the default wait is long. The NAIC design documents use <code>LOCK_TIMEOUT = 30</code> and <code>SELECT ... FOR UPDATE WAIT 10</code>, but this pack did not read the public parameter page. How to check at lab time: Snowflake docs page for the <code>LOCK_TIMEOUT</code> parameter. Record the result in file 13.</p>
+</blockquote>
+<p>Seed two rows (worksheet A):</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 91001, 2001, 'DRAFT', 'lock-test', CURRENT_TIMESTAMP();
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS, UPDATED_BY, UPDATED_AT)
+SELECT 91002, 2002, 'DRAFT', 'lock-test', CURRENT_TIMESTAMP();
+</code></pre>
+<p>Worksheet A: open a transaction and update row 91001, but do not finish it.</p>
+<pre><code class="language-sql">BEGIN;
+UPDATE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS SET ADMIN_STATUS = 'IN_REVIEW' WHERE WORKFLOW_ID = 91001;
+-- leave this transaction open
+</code></pre>
+<p>Worksheet B: update the other row, then the same row.</p>
+<pre><code class="language-sql">UPDATE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS SET ADMIN_STATUS = 'IN_REVIEW' WHERE WORKFLOW_ID = 91002;   -- different row
+UPDATE SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS SET ADMIN_STATUS = 'APPROVED'  WHERE WORKFLOW_ID = 91001;   -- same row
+</code></pre>
+<p>You should see in <strong>Mode H</strong>: the first statement returns at once. The second waits about 20 seconds and then fails with a lock timeout error. That is row-level locking: only the row A touched is locked.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables_1">If you are in Mode S (no hybrid tables)</h4>
+<p>You should see: even the first statement in B waits and times out, because the update in A holds a lock on the whole standard table until it ends. Write down what you see; it is the opposite of Mode H and is the whole reason the real design uses a hybrid table for the one place where concurrent writers must not collide.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-03]:</strong> The Mode S result (table-level wait for an update of a different row). The docs say standard tables lock at partition or table level, not row level. How to check at lab time: run the experiment and record what you see. Record the result in file 13.</p>
+</blockquote>
+<p>Finish worksheet A: <code>ROLLBACK;</code>. Clean up (either worksheet):</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS WHERE WORKFLOW_ID IN (91001, 91002);
+</code></pre>
+<h3 id="step-55-add-an-index-with-flyway-v5">Step 5.5 Add an index with Flyway (<code>V5</code>)</h3>
+<p>Run in: <strong>Terminal</strong> (repository root). Indexes on hybrid tables are Flyway's lane, because DCM cannot manage hybrid tables or their indexes.</p>
+<p>Create two files. If they already exist from Lab 4, keep them.</p>
+<p><code>flyway/migrations/hybrid/V5__add_audit_event_type_index.sql</code>:</p>
+<pre><code class="language-sql">CREATE INDEX IDX_AUDIT_EVENT_TYPE ON CALC_AUDIT_EVENT (EVENT_TYPE, EVENT_AT);
+</code></pre>
+<p><code>flyway/migrations/standard/V5__add_audit_event_type_index.sql</code> (a documented no-op, because a standard table has no secondary index):</p>
+<pre><code class="language-sql">-- Mode S stand-in: standard tables have no secondary indexes, so this migration only keeps the version numbers aligned with Mode H.
+SELECT 1;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-04]:</strong> The exact <code>CREATE INDEX &lt;name&gt; ON &lt;table&gt; (&lt;cols&gt;)</code> grammar for hybrid tables. The create-table page documents an inline <code>INDEX</code> clause and says indexes can be added later with <code>CREATE INDEX</code>. How to check at lab time: Snowflake docs page <code>CREATE INDEX</code>. Record the result in file 13.</p>
+</blockquote>
+<p>Now run Flyway from your laptop as the service identity. Load your local, git-ignored settings, check, then migrate.</p>
+<pre><code class="language-bash">cd flyway
+set -a; source .env.flyway; set +a      # sets FLYWAY_URL, FLYWAY_LOCATIONS and placeholders; this file is never committed
+flyway info
+flyway migrate
+flyway info
+</code></pre>
+<p>You should see: before <code>migrate</code>, version 5 is <code>Pending</code>. After <code>migrate</code>, version 5 is <code>Success</code>.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (Mode H):</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+SHOW INDEXES IN TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+</code></pre>
+<p>You should see: <code>IDX_AUDIT_EVENT_TYPE</code> with status <code>ACTIVE</code> (it may show <code>BUILD IN PROGRESS</code> for a moment on a large table). The app role needs <code>SELECT</code> on the table to benefit from the index, and it has it.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>SHOW INDEXES IN TABLE &lt;t&gt;</code> shows index status (BUILD IN PROGRESS or ACTIVE); altering an index or adding a column to it is not supported, so you drop and re-create; a role needs SELECT on the table to use its secondary index (https://docs.snowflake.com/en/sql-reference/sql/create-hybrid-table, read 2026-11-16).</p>
+</blockquote>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables_2">If you are in Mode S (no hybrid tables)</h4>
+<p><code>flyway migrate</code> applies the no-op. <code>SHOW INDEXES</code> returns nothing. Note that your history shows version 5 as success while no index exists. A history row proves that a file ran, not that the world looks like you hoped.</p>
+<h3 id="step-56-why-the-application-must-not-run-migrations-at-startup">Step 5.6 Why the application must not run migrations at startup</h3>
+<p>This step is a short experiment plus a reading exercise.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>. Pretend the application started Flyway with its own credential, the app role. The first thing Flyway does is create its history table in the schema.</p>
+<pre><code class="language-sql">USE ROLE SBX_FN_CALC_ENGINE_NP;
+CREATE TABLE SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_STARTUP_TEST (ID NUMBER);
+</code></pre>
+<p>You should see: the statement fails. With only DML rights the app cannot even create the history table, let alone alter a table. To make startup migrations work you would have to give the application's identity <code>CREATE</code>, <code>ALTER</code> and <code>DROP</code> rights, which destroys the least-privilege split you just verified.</p>
+<p>Now compare the two real designs. Read <code>src/main/resources/application.properties</code> and the <code>application-dev.properties</code> file in <code>/Users/drbanda/NAIC/Repos/Fpr-admin/fpr-admin-service/</code> (read only).</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>fpr-admin (PostgreSQL, Flyway at startup)</th>
+<th>Calc Admin target (Snowflake, Flyway in pipeline)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Who runs Flyway</td>
+<td>The application, when Spring Boot starts (<code>spring.flyway.enabled=true</code>)</td>
+<td>A pipeline job under an owner identity</td>
+</tr>
+<tr>
+<td>Credential</td>
+<td>The same datasource as the app (<code>spring.flyway.user</code> from the app's own settings)</td>
+<td>Separate owner identity; app role has DML only</td>
+</tr>
+<tr>
+<td><code>out-of-order</code></td>
+<td><code>true</code></td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>validate-on-migrate</code></td>
+<td><code>false</code> in dev and local</td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>repair-on-migrate</code></td>
+<td><code>true</code> in dev and local</td>
+<td>repair is manual, with approval</td>
+</tr>
+<tr>
+<td><code>baseline-on-migrate</code></td>
+<td><code>true</code> in local, <code>false</code> otherwise</td>
+<td><code>false</code>; baseline is an explicit one-time act</td>
+</tr>
+<tr>
+<td><code>clean</code></td>
+<td>not shown in properties</td>
+<td><code>cleanDisabled = true</code></td>
+</tr>
+<tr>
+<td>Environment data</td>
+<td><code>db/localdata</code>, <code>db/devdata</code>, <code>db/intdata</code>, <code>db/qadata</code> folders of <code>R__</code> data files chosen by profile</td>
+<td>Data changes are versioned migrations with assertions (Lab 4)</td>
+</tr>
+<tr>
+<td>If a migration fails</td>
+<td>The pod fails to start</td>
+<td>The job fails; the running application keeps working on the old schema</td>
+</tr>
+</tbody>
+</table>
+<p>Reasons from NAIC's design documents: the application credential would need DDL rights; several instances starting together would race; a failed migration would block every pod; production changes need change-request approval through protected pipelines; and Snowflake DDL cannot be rolled back. The second and third reasons are inferences in the NAIC explainer, not stated rules.</p>
+<p>Checkpoint: write one sentence for each row of the table that says why the right-hand choice is safer.</p>
+<h3 id="step-57-the-baseline-story-int-first-qa-and-prod-for-real">Step 5.7 The baseline story: INT first, QA and PROD for real</h3>
+<p>In NAIC the two live tables were made by hand in INT only. The Flyway plan for them is:</p>
+<ol>
+<li>Write the scripts that would create the tables (sequence, status table, index, audit table with sequence default, two indexes, grants). In the NAIC plan these are <code>V001</code> to <code>V006</code>.</li>
+<li>Check that the live INT objects match what those scripts would have made.</li>
+<li>Only then <strong>baseline</strong> INT at <code>V006</code>. Flyway records "version 6 is the starting point" without running anything.</li>
+<li>QA and PROD have nothing. They run <code>V001</code> to <code>V006</code> for real.</li>
+</ol>
+<p>The risky part is step 2. A baseline on a wrong assumption means Flyway believes an index or a grant exists when it does not, and later migrations build on it.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>. Write the shape check you would run before a baseline: compare the columns of the same table in two databases. Use INT and a clone, or INT and QA if you finished Lab 6.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+WITH a AS (
+  SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+  FROM SBX_INT.INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME = 'CALC_AUDIT_EVENT'
+), b AS (
+  SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+  FROM SBX_QA.INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME = 'CALC_AUDIT_EVENT'
+)
+SELECT 'only in INT' AS side, * FROM (SELECT * FROM a MINUS SELECT * FROM b)
+UNION ALL
+SELECT 'only in QA',  * FROM (SELECT * FROM b MINUS SELECT * FROM a);
+</code></pre>
+<p>You should see: zero rows. If you get rows, the two environments differ, and a baseline of the first on the scripts of the second would have been wrong. The column default differs in text if the sequence is fully qualified in one place and not the other: read it, do not assume.</p>
+<p>Also compare the grants and the table type. In Mode H check <code>is_hybrid</code>:</p>
+<pre><code class="language-sql">SHOW TABLES LIKE 'CALC_AUDIT_EVENT' IN SCHEMA SBX_INT.CALC_SUPPORT;
+SHOW TABLES LIKE 'CALC_AUDIT_EVENT' IN SCHEMA SBX_QA.CALC_SUPPORT;
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+SHOW GRANTS ON TABLE SBX_QA.CALC_SUPPORT.CALC_AUDIT_EVENT;
+</code></pre>
+<p>Paper exercise: read the Flyway history of INT and QA and write down the difference. In the sandbox both ran every migration, so neither has a baseline row. In NAIC, INT would show a baseline row at <code>V006</code> and QA and PROD would show six executed migrations.</p>
+<p>Where Flyway reads its own contract on this point: <code>baselineOnMigrate=false</code> normally, and a one-time baseline needs an approved decision and a runbook. Lab 2 showed the mechanics of <code>baseline</code> with the Lab 1 clone.</p>
+<h3 id="step-58-event-first-audit-bracket-deployed-through-dcm">Step 5.8 Event-first audit bracket, deployed through DCM</h3>
+<p>The engine procedure that activates a draft is a DCM-owned object. You will change its body so it writes the audit trail event-first. Then you will compare with the action-first gap.</p>
+<h4 id="the-design">The design</h4>
+<pre><code> event-first (target)                         action-first (today)
+ 1  INSERT PENDING event                      1  call the engine
+ 2  call the engine                           2  INSERT audit row
+ 3  INSERT COMPLETE event                     If step 2 fails, the change has no record.
+ If the process dies after 1, a PENDING
+ event with no COMPLETE remains: reconcile.
+</code></pre>
+<p>In ADR-0026 the third step is one permitted <code>UPDATE</code> of the same row from <code>PENDING</code> to its outcome. In the sandbox the audit table is append-only for the app role, so the miniature writes a second row instead. That choice is the heart of an open question you will meet in step 5.9.</p>
+<p>Run in: <strong>Terminal</strong>. Replace the whole file <code>dcm/calc_engine/sources/definitions/procedures/SP_ACTIVATE_DRAFT_CALCULATION.sql</code>. Keep a copy of the old text so you can compare. The activation logic (retire the source calc, activate the draft) is the same as in Lab 3, written with a subquery instead of a variable. Only the audit rows are new. As in Lab 3, names are fully qualified with the template variables, so the same file works in INT, QA, PROD and clones.</p>
+<pre><code class="language-sql">DEFINE PROCEDURE {{calc_db}}.{{calc_schema}}.SP_ACTIVATE_DRAFT_CALCULATION(P_DRAFT_CALC_ID NUMBER, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  v_rows NUMBER DEFAULT 0;
+BEGIN
+  -- 1. event first: the intent is recorded before anything changes
+  INSERT INTO {{calc_db}}.{{calc_schema}}.CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+  SELECT :P_DRAFT_CALC_ID, 'ACTIVATE', 'PENDING', :P_USER, CURRENT_TIMESTAMP();
+
+  -- 2. the engine work: retire the source calc, then activate the draft
+  UPDATE {{calc_db}}.{{calc_schema}}.CALCULATIONS SET CALC_STATUS = 'INACTIVE'
+  WHERE CALC_ID = (SELECT SOURCE_CALC_ID FROM {{calc_db}}.{{calc_schema}}.CALCULATIONS WHERE CALC_ID = :P_DRAFT_CALC_ID AND CALC_STATUS = 'DRAFT');
+  UPDATE {{calc_db}}.{{calc_schema}}.CALCULATIONS SET CALC_STATUS = 'ACTIVE'
+  WHERE CALC_ID = :P_DRAFT_CALC_ID AND CALC_STATUS = 'DRAFT';
+  v_rows := SQLROWCOUNT;
+
+  -- 3. complete: success or a recorded rejection
+  IF (v_rows = 1) THEN
+    INSERT INTO {{calc_db}}.{{calc_schema}}.CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+    SELECT :P_DRAFT_CALC_ID, 'ACTIVATE', 'COMPLETE', :P_USER, CURRENT_TIMESTAMP();
+    RETURN 'ACTIVATED ' || :P_DRAFT_CALC_ID;
+  END IF;
+  INSERT INTO {{calc_db}}.{{calc_schema}}.CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+  SELECT :P_DRAFT_CALC_ID, 'ACTIVATE_REJECTED', 'COMPLETE', :P_USER, CURRENT_TIMESTAMP();
+  RETURN 'NOT_A_DRAFT';
+EXCEPTION
+  WHEN OTHER THEN
+    -- the PENDING event stays: an event with no outcome means &quot;indeterminate, reconcile&quot;
+    RETURN 'ERROR: ' || SQLERRM;
+END
+$$;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G03]:</strong> Exact public <code>DEFINE PROCEDURE</code> grammar. This shape is copied from the working NAIC branch (header and <code>$$ ... $$</code> body as in <code>SP_ADD_CATEGORY</code>), and the docs say <code>DEFINE</code> behaves like <code>CREATE OR ALTER</code>. How to check at lab time: the supported-entities page links to the procedure pages. Record the result in file 13.</p>
+</blockquote>
+<p>Plan and deploy it, as the owner (connection <code>sbx_owner</code>, role <code>SBX_CICD_PIPELINE</code>). Targets do not choose the connection or role, so both are passed explicitly.</p>
+<pre><code class="language-bash">snow dcm plan SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM --target INT --from dcm/calc_engine -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+</code></pre>
+<p>You should see: exactly one change, an <code>ALTER</code> of the procedure <code>SP_ACTIVATE_DRAFT_CALCULATION</code>. The docs say a changed handler body is treated as a full replace, so the plan shows no line-by-line body diff.</p>
+<pre><code class="language-bash">snow dcm deploy SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM --target INT --from dcm/calc_engine -c sbx_owner --role SBX_CICD_PIPELINE --alias &quot;lab7-event-first&quot;
+snow dcm plan   SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM --target INT --from dcm/calc_engine -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+</code></pre>
+<p>You should see: a deployment with your alias, and then an empty re-plan (<code>changeset</code> is <code>[]</code>). Declared grants in <code>grants/access.sql</code> are re-applied by DCM, so the app role keeps <code>USAGE</code> on the procedure.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> A changed procedure or function handler is treated as a full replace in the plan; PLAN validates creation, not runtime success (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities, read 2026-11-16).</p>
+</blockquote>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Run the same text in a worksheet as the owner, with <code>CREATE OR REPLACE PROCEDURE</code> in place of <code>DEFINE PROCEDURE</code> and <code>SBX_INT.CALC_SUPPORT</code> in place of the template variables. Then run the grants again, because <code>CREATE OR REPLACE</code> drops them:</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON PROCEDURE SBX_INT.CALC_SUPPORT.SP_ACTIVATE_DRAFT_CALCULATION(NUMBER, VARCHAR) TO ROLE SBX_FN_CALC_ENGINE_NP;
+</code></pre>
+<p>This is the manual re-grant chore that DCM's declared grants remove.</p>
+<h4 id="use-it">Use it</h4>
+<p>Run in: <strong>Snowsight worksheet</strong>. Create a draft that points at a source calc, as the owner.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+CALL SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION('MINI_LIFE_RATIO_DRAFT', 'lab7');   -- returns the new CALC_ID, for example 2003
+UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS SET SOURCE_CALC_ID = 2001 WHERE CALC_NAME = 'MINI_LIFE_RATIO_DRAFT';
+</code></pre>
+<p>Now act as the app role, with the id you got:</p>
+<pre><code class="language-sql">USE ROLE SBX_FN_CALC_ENGINE_NP;
+CALL SBX_INT.CALC_SUPPORT.SP_ACTIVATE_DRAFT_CALCULATION(&lt;DRAFT_CALC_ID&gt;, 'dheeraj');   -- ACTIVATED &lt;id&gt;
+SELECT CALC_ID, CALC_NAME, CALC_STATUS FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_ID IN (2001, &lt;DRAFT_CALC_ID&gt;);
+SELECT EVENT_ID, CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT WHERE CALC_ID = &lt;DRAFT_CALC_ID&gt; ORDER BY EVENT_ID;
+CALL SBX_INT.CALC_SUPPORT.SP_ACTIVATE_DRAFT_CALCULATION(&lt;DRAFT_CALC_ID&gt;, 'dheeraj');   -- NOT_A_DRAFT
+</code></pre>
+<p>You should see: the call returns <code>ACTIVATED &lt;id&gt;</code>; the source calc <code>2001</code> is <code>INACTIVE</code> and the draft is <code>ACTIVE</code>; the audit table has a <code>PENDING</code> row followed by a <code>COMPLETE</code> row for <code>ACTIVATE</code>. The second call returns <code>NOT_A_DRAFT</code> and leaves a <code>PENDING</code> row followed by an <code>ACTIVATE_REJECTED</code> row.</p>
+<p>Why this works with an insert-only app role: the procedure runs as its owner (<code>EXECUTE AS OWNER</code>), so the audit rows are written with the owner's rights. The app role can call the procedure but still cannot touch audit rows directly. You proved that in step 5.1.</p>
+<h4 id="the-action-first-gap">The action-first gap</h4>
+<p>Run as the app role. This is what "engine first, audit second" looks like when the second step never happens.</p>
+<pre><code class="language-sql">USE ROLE SBX_FN_CALC_ENGINE_NP;
+UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS SET CALC_STATUS = 'INACTIVE' WHERE CALC_NAME = 'MINI_LIFE_RATIO_DRAFT';
+-- imagine the process crashes here, before the audit insert
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT WHERE EVENT_TYPE = 'DEACTIVATE';   -- 0
+</code></pre>
+<p>You should see: the calc changed state and no event describes it. With event-first, even a crash leaves a <code>PENDING</code> row to find.</p>
+<p>Restore the state for later steps:</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS SET CALC_STATUS = 'ACTIVE' WHERE CALC_NAME = 'MINI_LIFE_RATIO_DRAFT';
+</code></pre>
+<h3 id="step-59-the-honest-tension-append-only-versus-event-first">Step 5.9 The honest tension: append-only versus event-first</h3>
+<p>ADR-0026's event-first design completes the <code>PENDING</code> event once with the outcome. That needs one <code>UPDATE</code> on the audit table. NAIC's current live grant gives the service <code>INSERT</code> only. Snowflake cannot narrow an <code>UPDATE</code> grant to one column or to rows that are <code>PENDING</code>. This is open question RAJA-4 in the design notes.</p>
+<p>Three ways to resolve it, with trade-offs:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>How</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A. Grant <code>UPDATE</code> to the app role</td>
+<td>Simple. One row per event.</td>
+<td>The app role could now edit or falsify any audit row. Append-only is gone.</td>
+</tr>
+<tr>
+<td>B. Two rows per event (what step 5.8 does)</td>
+<td><code>PENDING</code> row, then <code>COMPLETE</code> row. App role stays insert-only.</td>
+<td>Queries must pair rows. Orphan <code>PENDING</code> rows need a reconciler.</td>
+</tr>
+<tr>
+<td>C. Write audit through an owner's-rights procedure</td>
+<td>App role can only call the procedure. The procedure does the insert and the one update.</td>
+<td>The procedure must validate everything, and the owner can update any row.</td>
+</tr>
+</tbody>
+</table>
+<p>Try option A on purpose, then take it back. It shows the problem in one minute.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+GRANT UPDATE ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT TO ROLE SBX_FN_CALC_ENGINE_NP;
+USE ROLE SBX_FN_CALC_ENGINE_NP;
+UPDATE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT SET ACTOR = 'someone else' WHERE EVENT_ID = (SELECT MIN(EVENT_ID) FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT);   -- now it works: the history was rewritten
+USE ROLE SBX_CICD_PIPELINE;
+REVOKE UPDATE ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT FROM ROLE SBX_FN_CALC_ENGINE_NP;
+</code></pre>
+<p>You should see: the update succeeds while the grant exists. After the revoke it fails again. Then check the actor of the first event: it now reads <code>someone else</code>. A hand-made grant also is not in any migration, so no tool reports it as drift. Flyway-owned grants are only as good as the last migration that touched them.</p>
+<p>Fix the data you changed:</p>
+<pre><code class="language-sql">UPDATE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT SET ACTOR = CURRENT_USER() WHERE ACTOR = 'someone else';
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-05]:</strong> That Snowflake cannot restrict <code>UPDATE</code> to specific columns or rows through a grant. The NAIC design note says it cannot. How to check at lab time: read the <code>GRANT &lt;privileges&gt;</code> reference and look for column-level DML. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-510-two-models-side-by-side">Step 5.10 Two models side by side</h3>
+<p>You now know enough to read the two designs in plain terms. Do not decide which is right: the NAIC decision between them is open (the architecture page lists "resolve the branch's two hybrid tables against ADR-0026's one hybrid lock table" as a stakeholder decision).</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Live model (what you built)</th>
+<th>ADR-0026 five-table design (Proposed, 2026-10-01)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unit of review</td>
+<td>One calculation</td>
+<td>A calc set for one data year</td>
+</tr>
+<tr>
+<td>Tables</td>
+<td>2 hybrid tables plus a sequence for the audit key (the sandbox adds a second sequence for the status table)</td>
+<td>5 tables, 2 sequences, and only one hybrid table</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td>Last write wins, no lock held by the app; a <code>409</code> when the status is <code>IN_REVIEW</code> or <code>APPROVED</code></td>
+<td>One hybrid row <code>CALC_OPEN_REVISION</code> per calc set and year holds the lock and enforces "one open revision"</td>
+</tr>
+<tr>
+<td>Audit</td>
+<td>Action-first, one row after the engine call</td>
+<td>Event-first, <code>PENDING</code> then outcome (<code>APPLIED</code>, <code>REJECTED</code>, <code>INDETERMINATE</code>)</td>
+</tr>
+<tr>
+<td>Statuses</td>
+<td><code>DRAFT</code>, <code>IN_REVIEW</code>, <code>APPROVED</code>, <code>ACTIVE</code>, <code>DISCARDED</code></td>
+<td><code>IN_PROGRESS</code>, <code>IN_REVIEW</code>, <code>APPROVED</code>, <code>PUBLISHED</code>, <code>DISCARDED</code></td>
+</tr>
+<tr>
+<td>Where</td>
+<td>The engine's own schema</td>
+<td>A dedicated <code>CALC_ADMIN_LIFECYCLE</code> schema per environment</td>
+</tr>
+<tr>
+<td>History tables</td>
+<td>Hybrid (gives up Fail-safe, <code>UNDROP</code>, replication, full Time Travel)</td>
+<td>Standard tables, with 90 days of Time Travel in the design</td>
+</tr>
+<tr>
+<td>Migration status</td>
+<td>Created by hand, not in Git</td>
+<td>Flyway target, not executed</td>
+</tr>
+<tr>
+<td>Who owns it in the target split</td>
+<td>Flyway (hybrid and lifecycle lane)</td>
+<td>Flyway (all five, because one schema is one migration boundary)</td>
+</tr>
+</tbody>
+</table>
+<p>The reasoning behind making only one table hybrid in ADR-0026 is the cost list of hybrid tables from file 05: no <code>UNDROP</code>, no Fail-safe, no replication, Time Travel only by timestamp. Those losses hurt most on history tables, and only the open-revision claim needs an enforced key.</p>
+<p>Exercise: list the five tables and mark each one "standard" or "hybrid" and "Flyway" or "DCM". Check your answer with the checkpoint below.</p>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Which privileges does <code>SBX_FN_CALC_ENGINE_NP</code> hold on <code>CALC_AUDIT_EVENT</code>, and which tool applied them?</li>
+<li>The app role can insert a status row but cannot create a table. Why does that rule out running Flyway as the app role?</li>
+<li>In Mode H, why does the second insert of <code>WORKFLOW_ID = 90001</code> fail, and why does it succeed in Mode S?</li>
+<li>In the two-session test, what is the difference between Mode H and Mode S for an update on a different row?</li>
+<li>What does a <code>PENDING</code> audit row with no later <code>COMPLETE</code> row tell you?</li>
+<li>Why could the app role not write audit rows directly, yet the procedure could?</li>
+<li>Name two reasons NAIC's target runs Flyway in a pipeline job and not at application start.</li>
+<li>In the five-table design, which table is hybrid, why only that one, and which tool owns all five?</li>
+</ol>
+<p><strong>Answers</strong></p>
+<ol>
+<li><code>SELECT</code> and <code>INSERT</code>. They were applied by Flyway inside <code>V2</code>, because the hybrid tables are Flyway-owned and DCM cannot manage them.</li>
+<li>Flyway must create its history table and run DDL. With DML-only rights it cannot do either, and giving it DDL rights would remove the least-privilege split.</li>
+<li>A hybrid table enforces its primary key. A standard table stores the key as information only and enforces only <code>NOT NULL</code>.</li>
+<li>In Mode H the update on a different row proceeds at once (row lock). In Mode S it waits for the other transaction (coarser lock), so it can time out.</li>
+<li>Something was started and its outcome is unknown. It needs reconciling against the engine state. In ADR-0026 the outcome is then recorded as <code>INDETERMINATE</code>.</li>
+<li>The procedure is <code>EXECUTE AS OWNER</code>, so its inserts run with the owner's rights. The caller needs only <code>USAGE</code> on the procedure.</li>
+<li>Any two of: the application credential would need DDL rights; several instances would race; a failed migration would block every instance; production changes need protected, approved pipelines; Snowflake DDL cannot be rolled back.</li>
+<li><code>CALC_OPEN_REVISION</code>. Hybrid tables lose Fail-safe, <code>UNDROP</code>, replication and full Time Travel, which matter most for history, and only the open-revision claim needs an enforced key and a row lock. Flyway owns all five, because the lifecycle schema is one migration boundary.</li>
+</ol>
+<h2 id="7-break-it">7. Break it</h2>
+<p><strong>Reproduce the real "sequence not visible" bug.</strong> On 2026-11-03 the service role could not see <code>CALC_AUDIT_EVENT_SEQ</code>, so an insert that omitted <code>EVENT_ID</code> failed. The same can happen here.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+REVOKE USAGE ON SEQUENCE SBX_INT.CALC_SUPPORT.SEQ_AUDIT_EVENT_ID FROM ROLE SBX_FN_CALC_ENGINE_NP;
+
+USE ROLE SBX_FN_CALC_ENGINE_NP;
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+SELECT 2001, 'BREAK', 'COMPLETE', CURRENT_USER(), CURRENT_TIMESTAMP();
+</code></pre>
+<ul>
+<li><strong>Symptom:</strong> the insert fails. The message says the sequence cannot be found or accessed, or the role lacks usage on it. The calling code never mentions the sequence, so the error looks unrelated to the insert.</li>
+<li><strong>Diagnosis:</strong> <code>SHOW GRANTS ON SEQUENCE SBX_INT.CALC_SUPPORT.SEQ_AUDIT_EVENT_ID;</code> shows no <code>USAGE</code> for the app role. <code>DESC TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT</code> shows the default is <code>SEQ_AUDIT_EVENT_ID.NEXTVAL</code>.</li>
+<li><strong>Recovery, the DCM way (Mode D):</strong> the sequence grant is declared in <code>grants/access.sql</code>, so a plan sees the missing grant. Run:</li>
+</ul>
+<pre><code class="language-bash">snow dcm plan SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM --target INT --from dcm/calc_engine -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+snow dcm deploy SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM --target INT --from dcm/calc_engine -c sbx_owner --role SBX_CICD_PIPELINE --alias &quot;lab7-regrant&quot;
+</code></pre>
+<p>You should see: the plan lists a <code>GRANT</code> change for the sequence, deploy restores it, and the insert works again.</p>
+<ul>
+<li><strong>Recovery, Mode D-off:</strong> <code>GRANT USAGE ON SEQUENCE SBX_INT.CALC_SUPPORT.SEQ_AUDIT_EVENT_ID TO ROLE SBX_FN_CALC_ENGINE_NP;</code> by hand.</li>
+<li><strong>Lesson:</strong> a grant on a sequence is a dependency of a table default. A declared grant is both documentation and a repair tool. The same grant for a table owned by Flyway would not be repaired by DCM, only by a new migration.</li>
+</ul>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-09-06]:</strong> That a plan reports a hand-revoked declared grant as a change. The docs say a plan against live state shows changes made outside DCM. How to check at lab time: run the commands above. Record the result in file 13.</p>
+</blockquote>
+<p>Clean up the test row:</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+DELETE FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT WHERE EVENT_TYPE = 'BREAK';
+</code></pre>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trial accounts have no hybrid tables</td>
+<td>Mode S contrast in 5.3 and 5.4</td>
+<td>Stand-ins plus read-only expected results; optional upgrade</td>
+<td>VERIFIED (docs); exact error TC-G01</td>
+</tr>
+<tr>
+<td>Standard tables do not enforce primary keys</td>
+<td>5.3 in Mode S</td>
+<td>Hybrid table, or application checks</td>
+<td>VERIFIED</td>
+</tr>
+<tr>
+<td>DCM cannot manage hybrid tables or their indexes</td>
+<td>5.5</td>
+<td>Flyway migration <code>V5</code></td>
+<td>VERIFIED (not in the supported list)</td>
+</tr>
+<tr>
+<td>A grant cannot be limited to one column or row</td>
+<td>5.9 option A</td>
+<td>Procedure with owner's rights, two-row audit, or accept <code>UPDATE</code></td>
+<td>TO-CONFIRM (TC-09-05)</td>
+</tr>
+<tr>
+<td>History row proves a file ran, not what the world looks like</td>
+<td>5.5 in Mode S</td>
+<td>Shape check before baseline, <code>validate</code> plus fingerprints</td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Hand-made grants are not reported by Flyway</td>
+<td>5.9</td>
+<td>Declared grants in DCM for DCM-owned objects, review of Flyway grants</td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Flyway has no preview and no drift check in Community</td>
+<td>5.7</td>
+<td>Shape query, DCM plan for DCM-owned objects</td>
+<td>VERIFIED (Community feature list)</td>
+</tr>
+<tr>
+<td>Hybrid tables lose <code>UNDROP</code> and Fail-safe</td>
+<td>5.10</td>
+<td>Standard tables for history, backups, Time Travel by timestamp</td>
+<td>VERIFIED (docs)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>An app role with DML only can do its job and nothing more, and you proved the "nothing more" with failing statements.</li>
+<li>A hybrid table enforces its key and locks by row. A standard stand-in does neither, and the difference is visible in two worksheets.</li>
+<li>Migrations belong to a pipeline with an owner identity. Running them at application start needs rights the app should never have.</li>
+<li>A baseline is safe only after you compare the live shape with the scripts.</li>
+<li>Event-first auditing turns a silent gap into a visible <code>PENDING</code> row, and it forces a design choice about who may update an audit table.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS WHERE UPDATED_BY IN ('pk-test', 'lock-test');
+DROP TABLE IF EXISTS SBX_INT.CALC_SUPPORT.APP_MADE_THIS;
+</code></pre>
+<p>Keep: <code>V5</code> applied, the v2 procedure, the audit rows. Lab 8 and the capstone use them. Nothing in this lab costs more than seconds of X-Small compute.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p>App role grants verified; <code>V5</code> applied (Mode H) or a documented no-op (Mode S); <code>SP_ACTIVATE_DRAFT_CALCULATION</code> v2 deployed through DCM (alias <code>lab7-event-first</code>); audit rows exist in <code>CALC_AUDIT_EVENT</code>; the draft calculation <code>MINI_LIFE_RATIO_DRAFT</code> exists and is <code>ACTIVE</code>; source calc <code>2001</code> is <code>INACTIVE</code>.</p>
+<blockquote>
+<p>Heads-up for Lab 8 and the capstone: calc <code>2001</code> is now <code>INACTIVE</code>. If you want it <code>ACTIVE</code> again for smoke tests, run as the owner: <code>UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS SET CALC_STATUS = 'ACTIVE' WHERE CALC_ID = 2001;</code>.</p>
+</blockquote>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G01, TC-G03, TC-08-08, TC-09-01, TC-09-02, TC-09-03, TC-09-04, TC-09-05, TC-09-06.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Go on to <a href="10-lab8-failure-drills-and-limitations.md">Lab 8: failure drills and limitations</a>.</p>
+</body></html>

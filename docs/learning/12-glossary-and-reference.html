@@ -1,0 +1,953 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Glossary and reference (file 12)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="glossary-and-reference-file-12">Glossary and reference (file 12)</h1>
+<blockquote>
+<p><strong>File no:</strong> 12 | <strong>Kind:</strong> reference, no lab | <strong>Time:</strong> use as needed | <strong>Prerequisites:</strong> none | <strong>Read date for public docs facts:</strong> 2026-11-16 | <strong>Modes:</strong> all</p>
+</blockquote>
+<p>This file holds the glossary, cheat sheets per tool, a troubleshooting table and links to the public documentation. Facts marked TO-CONFIRM were not verified against a public page; the full list is in file 13.</p>
+<p>Convention for this pack: each term below is also defined where it first appears in a lab. "In NAIC" ties a term to the real calc-engine and calc-admin work. NAIC names appear only as they are named in NAIC's own design pages.</p>
+<h2 id="1-glossary">1. Glossary</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+<th>In NAIC or in the sandbox</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Account identifier</td>
+<td>The name of a Snowflake account in the form <code>&lt;organization&gt;-&lt;account&gt;</code>. It builds the host <code>&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com</code>.</td>
+<td>Always written as a placeholder in this pack.</td>
+</tr>
+<tr>
+<td><code>ACCOUNTADMIN</code></td>
+<td>The most powerful Snowflake role. Use it rarely, never as a default role. Only it can create resource monitors.</td>
+<td>Bootstrap and the cost drill only.</td>
+</tr>
+<tr>
+<td>Action-first audit</td>
+<td>Do the action, then write the audit row. A failure between the two leaves an unaudited change.</td>
+<td>Calc Admin today. Contrast with event-first.</td>
+</tr>
+<tr>
+<td>Adoption</td>
+<td>Putting an existing object under a tool's control without changing it. For DCM: write a matching <code>DEFINE</code>, plan, deploy. For Flyway: <code>baseline</code>.</td>
+<td>DCM re-adoption of INT objects; baseline of the hand-made lifecycle tables.</td>
+</tr>
+<tr>
+<td>Alias (DCM)</td>
+<td>A human name for a deployment, such as <code>int-a1b2c3d</code>.</td>
+<td>Pipeline deployments use <code>&lt;env&gt;-&lt;short-sha&gt;</code>.</td>
+</tr>
+<tr>
+<td>Append-only</td>
+<td>A table that is only added to, never edited or deleted by its writers. Enforced by grants.</td>
+<td><code>CALC_AUDIT_EVENT</code> for the app role.</td>
+</tr>
+<tr>
+<td><code>AUTO_SUSPEND</code></td>
+<td>Seconds of idleness after which a warehouse stops and stops costing credits.</td>
+<td>60 on <code>SBX_CALC_WH</code>.</td>
+</tr>
+<tr>
+<td>Baseline (Flyway)</td>
+<td>Telling Flyway that the database is already at version N. It records a marker and runs nothing.</td>
+<td>Lab 2 and Lab 7.</td>
+</tr>
+<tr>
+<td>Blast radius</td>
+<td>How much damage a mistake can do.</td>
+<td>Labs keep it at "one throwaway clone".</td>
+</tr>
+<tr>
+<td>Callback (Flyway)</td>
+<td>A script Flyway runs at lifecycle events. Limited in Community.</td>
+<td>Not used.</td>
+</tr>
+<tr>
+<td>Changeset (DCM plan)</td>
+<td>The list of CREATE, ALTER and DROP entries a plan or deploy would apply. Empty means in sync.</td>
+<td>Read by <code>check_plan_for_drops.py</code>.</td>
+</tr>
+<tr>
+<td>Checksum</td>
+<td>A number computed from a file. Flyway stores it and compares later.</td>
+<td>Edited applied migrations fail <code>validate</code>.</td>
+</tr>
+<tr>
+<td>CI/CD</td>
+<td>Automatic checks (CI) and repeatable delivery (CD) driven by a pipeline.</td>
+<td>GitLab at NAIC, GitHub Actions in the sandbox.</td>
+</tr>
+<tr>
+<td>Clone (zero-copy)</td>
+<td>A copy of a database, schema or table that shares storage with the source until data diverges.</td>
+<td><code>SBX_DEV_&lt;TICKET&gt;</code> ticket environments.</td>
+</tr>
+<tr>
+<td>Concurrency group</td>
+<td>GitHub's way to allow only one job at a time for a name.</td>
+<td>The <code>resource_group</code> idea of GitLab.</td>
+</tr>
+<tr>
+<td>Credit</td>
+<td>The unit Snowflake bills compute in. A warehouse uses credits while running.</td>
+<td>Trial: about $400 of free usage for 30 days.</td>
+</tr>
+<tr>
+<td>DCM</td>
+<td>Database Change Management. Snowflake's declarative way to describe objects and apply the difference.</td>
+<td>Owns supported engine objects.</td>
+</tr>
+<tr>
+<td>DCM project object</td>
+<td>A schema-level Snowflake object that holds deployments and history for one environment.</td>
+<td><code>CALC_ENGINE_DCM</code> in each database.</td>
+</tr>
+<tr>
+<td>DDL auto-commit</td>
+<td>Snowflake commits DDL statements as they run, so they cannot be rolled back with the rest of a file.</td>
+<td>Why half-failed migrations leave partial changes.</td>
+</tr>
+<tr>
+<td><code>DEFINE</code></td>
+<td>The statement used in a DCM definition file. It behaves like <code>CREATE OR ALTER</code>.</td>
+<td>One object per file.</td>
+</tr>
+<tr>
+<td>Deployment (DCM)</td>
+<td>One applied change set, stored with its rendered definitions. Named <code>DEPLOYMENT$&lt;n&gt;</code>, optionally with an alias.</td>
+<td><code>SHOW DEPLOYMENTS IN DCM PROJECT</code>.</td>
+</tr>
+<tr>
+<td>Digest (image)</td>
+<td>An immutable content hash of a container image, written <code>sha256:...</code>.</td>
+<td>Pins the Flyway image.</td>
+</tr>
+<tr>
+<td>Drift</td>
+<td>Live objects differ from what the files say, because someone changed them by hand.</td>
+<td>Found by a full DCM plan, not by Flyway Community.</td>
+</tr>
+<tr>
+<td>Drop check</td>
+<td>A script that fails a pipeline if a plan contains a DROP.</td>
+<td><code>scripts/check_plan_for_drops.py</code>.</td>
+</tr>
+<tr>
+<td>Environment (GitHub)</td>
+<td>A named deployment target with protection rules and its own secrets.</td>
+<td><code>int</code>, <code>qa</code>, <code>prod</code>, <code>pr-clone</code>.</td>
+</tr>
+<tr>
+<td><code>EXECUTE AS OWNER</code></td>
+<td>A stored procedure runs with the rights of its owner, not the caller.</td>
+<td>Clone procedures and engine procedures.</td>
+</tr>
+<tr>
+<td>Event-first audit</td>
+<td>Write a <code>PENDING</code> event, do the action, write the outcome.</td>
+<td>ADR-0026 design; Lab 7 miniature.</td>
+</tr>
+<tr>
+<td>Fail closed</td>
+<td>A check that cannot decide treats that as a failure.</td>
+<td>The helper scripts.</td>
+</tr>
+<tr>
+<td>Fail forward</td>
+<td>After applying a migration, fix problems by adding a new one, never by editing the old one.</td>
+<td>Flyway rule.</td>
+</tr>
+<tr>
+<td>Flyway</td>
+<td>A migration tool that runs numbered SQL files in order and records them in a history table.</td>
+<td>Owns hybrid tables, renames, data changes.</td>
+</tr>
+<tr>
+<td>Flyway history table</td>
+<td>The table in which Flyway records every migration. Default name <code>flyway_schema_history</code>.</td>
+<td><code>FLYWAY_HISTORY_CALC_SUPPORT</code> in the main project.</td>
+</tr>
+<tr>
+<td>Hybrid table</td>
+<td>A row-store table with an enforced primary key, row-level locks and secondary indexes. Not in trial accounts.</td>
+<td><code>CALC_WORKFLOW_STATUS</code>, <code>CALC_AUDIT_EVENT</code>.</td>
+</tr>
+<tr>
+<td><code>IGNORE HYBRID TABLES</code></td>
+<td>A clause on a schema clone that skips hybrid tables, which cannot be cloned at schema level.</td>
+<td>Clone procedure.</td>
+</tr>
+<tr>
+<td>Idempotent</td>
+<td>Running it twice has the same result as running it once.</td>
+<td>Data fixes use <code>WHERE ... &lt;&gt; new value</code>.</td>
+</tr>
+<tr>
+<td>Index (secondary)</td>
+<td>An extra structure that speeds lookups on columns. On hybrid tables created in <code>CREATE</code> or with <code>CREATE INDEX</code>.</td>
+<td><code>IDX_AUDIT_EVENT_TYPE</code>.</td>
+</tr>
+<tr>
+<td>Jinja</td>
+<td>The template language DCM uses in definition files (<code>{{var}}</code>, <code>{% if %}</code>).</td>
+<td><code>{{calc_db}}</code>.</td>
+</tr>
+<tr>
+<td>JWT</td>
+<td>A signed token. Key-pair login sends one.</td>
+<td>Error 390144.</td>
+</tr>
+<tr>
+<td>Key pair</td>
+<td>A private key you keep and a public key you register with Snowflake.</td>
+<td>Service user login.</td>
+</tr>
+<tr>
+<td>Ledger (data changes)</td>
+<td>A table listing the data changes applied.</td>
+<td><code>DATA_CHANGE_LOG</code>.</td>
+</tr>
+<tr>
+<td>Lock timeout</td>
+<td>How long a statement waits for a lock before failing.</td>
+<td>Lab 7 sets 20 seconds.</td>
+</tr>
+<tr>
+<td>Manifest (<code>manifest.yml</code>)</td>
+<td>The file that names a DCM project's targets, owners and templating values.</td>
+<td><code>dcm/calc_engine/manifest.yml</code>.</td>
+</tr>
+<tr>
+<td>Migration</td>
+<td>A numbered SQL file that moves a database one step.</td>
+<td><code>V1</code> to <code>V8</code>.</td>
+</tr>
+<tr>
+<td>Mode H, S, D</td>
+<td>Pack flags: H hybrid tables available, S standard stand-ins, D DCM available (<code>D-off</code> if not).</td>
+<td>Chosen in file 02.</td>
+</tr>
+<tr>
+<td>MFA</td>
+<td>Multi-factor authentication. Required for human sign-in in most accounts.</td>
+<td>See file 02 and TC-G19.</td>
+</tr>
+<tr>
+<td>OIDC</td>
+<td>A standard for short-lived identity tokens. GitHub can issue one per job.</td>
+<td>Optional stretch of Lab 6.</td>
+</tr>
+<tr>
+<td>Out-of-order</td>
+<td>Applying a migration whose number is lower than one already applied. Off by default.</td>
+<td><code>outOfOrder = false</code>.</td>
+</tr>
+<tr>
+<td>Ownership</td>
+<td>The one role that can alter, drop and grant on an object.</td>
+<td>Pipeline role owns engine objects.</td>
+</tr>
+<tr>
+<td>Pending (audit)</td>
+<td>An event whose outcome has not been written.</td>
+<td>Reconcile later.</td>
+</tr>
+<tr>
+<td>Placeholder (Flyway)</td>
+<td>A <code>${name}</code> token replaced inside migrations.</td>
+<td><code>${calc_db}</code>, <code>${app_role}</code>.</td>
+</tr>
+<tr>
+<td>Plan (DCM)</td>
+<td>The computed difference between definitions and live state. Executes no DDL.</td>
+<td><code>snow dcm plan</code>.</td>
+</tr>
+<tr>
+<td><code>PLAN DELTA</code></td>
+<td>A plan limited to changed definitions and what depends on them. Does not detect drift.</td>
+<td><code>snow dcm plan --delta</code>.</td>
+</tr>
+<tr>
+<td>Pipeline</td>
+<td>The automated sequence run on a change.</td>
+<td>Six GitHub workflows.</td>
+</tr>
+<tr>
+<td>Pinning</td>
+<td>Naming an exact immutable version of a tool, image or action.</td>
+<td>SHAs, tags and digests.</td>
+</tr>
+<tr>
+<td>Project owner role</td>
+<td>The role a DCM project runs as and that owns what it deploys.</td>
+<td><code>SBX_CICD_PIPELINE</code>.</td>
+</tr>
+<tr>
+<td>Purge (DCM)</td>
+<td>Drops everything a project manages. Non-production only.</td>
+<td>Capstone cleanup.</td>
+</tr>
+<tr>
+<td>Re-plan</td>
+<td>A plan run right after a deploy. It must be empty.</td>
+<td>Every pipeline ends with it.</td>
+</tr>
+<tr>
+<td>Redirects</td>
+<td>A map that rewrites source names to clone names inside procedures at run time.</td>
+<td><code>ENV_CONFIG</code>, <code>FN_APPLY_REDIRECTS</code>.</td>
+</tr>
+<tr>
+<td>Repair (Flyway)</td>
+<td>Removes failed history rows and realigns checksums to the files.</td>
+<td>Used with care in Lab 8.</td>
+</tr>
+<tr>
+<td>Repeatable migration</td>
+<td><code>R__&lt;name&gt;.sql</code>, re-applied whenever its checksum changes.</td>
+<td>Procedure files in way 2.</td>
+</tr>
+<tr>
+<td>Resource monitor</td>
+<td>A credit budget with triggers that notify or suspend a warehouse.</td>
+<td><code>SBX_CALC_RM</code>.</td>
+</tr>
+<tr>
+<td>Role</td>
+<td>A set of privileges a user can use.</td>
+<td>Four sandbox roles.</td>
+</tr>
+<tr>
+<td>Runner</td>
+<td>The machine that executes a workflow job.</td>
+<td><code>ubuntu-24.04</code>.</td>
+</tr>
+<tr>
+<td>Secret (GitHub)</td>
+<td>An encrypted value exposed to workflows, hidden in logs.</td>
+<td>Private key, passphrase, account.</td>
+</tr>
+<tr>
+<td>Service user</td>
+<td>A non-human Snowflake user (<code>TYPE = SERVICE</code>). It cannot use a password.</td>
+<td><code>SBX_SVC_CICD</code>.</td>
+</tr>
+<tr>
+<td>Snowflake CLI (<code>snow</code>)</td>
+<td>The command-line tool for Snowflake. DCM commands need 3.24.0 or higher.</td>
+<td>Pinned at 3.33.0.</td>
+</tr>
+<tr>
+<td>Supply chain</td>
+<td>Everything your pipeline downloads and runs.</td>
+<td>Pinned and mirrored.</td>
+</tr>
+<tr>
+<td>Target (DCM)</td>
+<td>A named entry in the manifest: account, project, owner role, template set.</td>
+<td><code>INT</code>, <code>QA</code>, <code>PROD</code>, <code>CLONE</code>.</td>
+</tr>
+<tr>
+<td>Templating</td>
+<td>Filling variables into definition files per environment.</td>
+<td><code>calc_db</code>, <code>app_role</code>.</td>
+</tr>
+<tr>
+<td>Terraform</td>
+<td>Infrastructure as code. At NAIC it owns accounts, databases, schemas, roles, warehouses and integrations.</td>
+<td>Replaced in the sandbox by bootstrap SQL.</td>
+</tr>
+<tr>
+<td>Ticket</td>
+<td>The short id of a piece of work, here the clone name suffix.</td>
+<td><code>LAB5A</code>, <code>PR12</code>.</td>
+</tr>
+<tr>
+<td>Time Travel</td>
+<td>Query or restore old data within a retention period.</td>
+<td>Clones have 0 days.</td>
+</tr>
+<tr>
+<td>TOML</td>
+<td>The configuration format of <code>flyway.toml</code>.</td>
+<td>Replaces <code>flyway.conf</code>.</td>
+</tr>
+<tr>
+<td>Trial account</td>
+<td>Snowflake's free first account: 30 days or until the credits are used.</td>
+<td>No hybrid tables.</td>
+</tr>
+<tr>
+<td>Unmanage</td>
+<td>Make DCM stop managing an object without dropping it.</td>
+<td><code>SYSTEM$UNMANAGE_...</code> functions.</td>
+</tr>
+<tr>
+<td><code>validate</code> (Flyway)</td>
+<td>Compares applied migrations with the files and fails on mismatch.</td>
+<td>Run in <code>validate.yml</code>.</td>
+</tr>
+<tr>
+<td>Versioned migration</td>
+<td><code>V&lt;number&gt;__&lt;description&gt;.sql</code>, applied once, in order.</td>
+<td><code>V1</code>, <code>V2</code>, and so on.</td>
+</tr>
+<tr>
+<td>Warehouse</td>
+<td>The compute that runs queries and costs credits while running.</td>
+<td><code>SBX_CALC_WH</code>.</td>
+</tr>
+<tr>
+<td>Workload identity federation</td>
+<td>Letting a platform's identity token log in to Snowflake with no stored key.</td>
+<td>NAIC target.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="2-cheat-sheets">2. Cheat sheets</h2>
+<p>Each sheet lists only syntax seen on a public page (marked VERIFIED with the date) or taken from the sandbox files. Anything else is marked TO-CONFIRM.</p>
+<h3 id="21-snow-dcm-snowflake-cli-3240-or-higher">2.1 <code>snow dcm</code> (Snowflake CLI 3.24.0 or higher)</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM Projects need Snowflake CLI 3.24.0 or higher for the commands and options below; the CLI command list is <code>create, deploy, describe, drop, drop-deployment, list, list-deployments, plan, preview, purge, test</code> (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use and .../snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16).</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Version</td>
+<td><code>snow --version</code></td>
+</tr>
+<tr>
+<td>Test a connection</td>
+<td><code>snow connection test -c &lt;name&gt;</code> or with env variables <code>snow connection test -x</code></td>
+</tr>
+<tr>
+<td>Create the project object</td>
+<td><code>snow dcm create &lt;db.schema.project&gt; --target &lt;T&gt; --from &lt;dir&gt; [--if-not-exists]</code></td>
+</tr>
+<tr>
+<td>Plan</td>
+<td><code>snow dcm plan &lt;project&gt; --target &lt;T&gt; --from &lt;dir&gt; [-D "key='value'"] [--save-output] [--delta]</code></td>
+</tr>
+<tr>
+<td>Deploy</td>
+<td><code>snow dcm deploy &lt;project&gt; --target &lt;T&gt; --from &lt;dir&gt; [-D "key='value'"] [--alias &lt;alias&gt;] [--save-output]</code></td>
+</tr>
+<tr>
+<td>Variables</td>
+<td><code>-D "name='text'"</code> or <code>--variable</code>. Strings need inner single quotes, lists need brackets. Order of precedence: defaults, configuration, runtime.</td>
+</tr>
+<tr>
+<td>Re-plan or re-deploy an old deployment</td>
+<td><code>--deployment &lt;name_or_alias&gt;</code> (quote <code>$</code> in <code>'DEPLOYMENT$1'</code>)</td>
+</tr>
+<tr>
+<td>List and describe</td>
+<td><code>snow dcm list [--in database &lt;db&gt;]</code>, <code>snow dcm describe &lt;project&gt;</code></td>
+</tr>
+<tr>
+<td>Run expectations</td>
+<td><code>snow dcm test &lt;project&gt; --target &lt;T&gt; --from &lt;dir&gt;</code> (exit 0 pass, 1 fail)</td>
+</tr>
+<tr>
+<td>Output files</td>
+<td><code>--save-output</code> recreates <code>out/</code> under the <code>--from</code> folder each time (file name TC-G04)</td>
+</tr>
+<tr>
+<td>Role and connection</td>
+<td>Always pass <code>-c &lt;connection&gt;</code> and <code>--role &lt;role&gt;</code>. Targets do not switch them.</td>
+</tr>
+<tr>
+<td>Other commands</td>
+<td><code>preview</code>, <code>purge</code>, <code>drop</code>, <code>drop-deployment</code>, <code>list-deployments</code>: run <code>snow dcm &lt;cmd&gt; --help</code> (TC-G26)</td>
+</tr>
+</tbody>
+</table>
+<p>SQL forms (run in a worksheet):</p>
+<pre><code class="language-sql">CREATE DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;
+SHOW DCM PROJECTS IN SCHEMA SBX_INT.CALC_SUPPORT;
+SHOW DEPLOYMENTS IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;
+SHOW ENTITIES IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;
+SHOW GRANTS IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;
+EXECUTE DCM PROJECT SBX_INT.CAP_DCM.CAP_DCM_PROJECT PURGE;       -- drops everything it manages, non-production only
+DROP DCM PROJECT IF EXISTS SBX_INT.CAP_DCM.CAP_DCM_PROJECT;      -- objects stay, deployment history is deleted
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;
+GRANT PLAN ON DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM TO ROLE SBX_CALC_READER;
+SELECT SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT('&lt;project&gt;', '&lt;TYPE&gt;', '&lt;fqn&gt;');          -- TC-10-01 for exact use
+</code></pre>
+<p>Privilege ladder on the project object: <code>READ</code> &lt; <code>MONITOR</code> &lt; <code>PLAN</code> &lt; <code>OWNERSHIP</code>. <code>PLAN</code> runs as the project owner's role.</p>
+<p>Definition file rules: only <code>DEFINE</code>, <code>GRANT</code>, <code>ATTACH</code>; one object per file; fully qualified names; each object defined once across all files; <code>/out/</code> in <code>.gitignore</code>; not supported in Jinja: <code>import</code>, <code>extends</code>, <code>include</code>.</p>
+<p>Example shapes (grammar for procedures and sequences: TC-G03):</p>
+<pre><code class="language-sql">DEFINE TABLE SBX_INT.CAP_DCM.CALCULATIONS (CALC_ID NUMBER(38,0) NOT NULL, CALC_NAME VARCHAR(255), primary key (CALC_ID));
+DEFINE SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_CALC_ID start with 2001 increment by 1 noorder;
+GRANT SELECT ON TABLE {{calc_db}}.{{calc_schema}}.CALCULATIONS TO ROLE {{reader_role}};
+</code></pre>
+<p>Manifest keys: <code>manifest_version: 2</code>, <code>type: DCM_PROJECT</code>, <code>default_target</code>, <code>targets.&lt;NAME&gt;.{account_identifier, project_name, project_owner, templating_config}</code>, <code>templating.defaults</code>, <code>templating.configurations.&lt;NAME&gt;</code>.</p>
+<h3 id="22-flyway-community-13122">2.2 Flyway (Community, 13.12.2)</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> Current stable 13.12.2 (2026-11-12). Community includes migrate, info, validate, baseline, repair, clean. Undo and dry run are Teams. Drift detection is Enterprise (https://documentation.red-gate.com/fd/feature-summary-165740620.html and .../flyway/reference/commands, read 2026-11-16).</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Version</td>
+<td><code>flyway -v</code> (Docker: <code>docker run --rm redgate/flyway:13.12.2 -v</code>)</td>
+</tr>
+<tr>
+<td>Show status</td>
+<td><code>flyway info</code></td>
+</tr>
+<tr>
+<td>Check applied vs files</td>
+<td><code>flyway validate</code></td>
+</tr>
+<tr>
+<td>Apply pending</td>
+<td><code>flyway migrate</code></td>
+</tr>
+<tr>
+<td>Mark existing database</td>
+<td><code>flyway baseline -baselineVersion=&lt;n&gt; -baselineDescription="&lt;text&gt;"</code></td>
+</tr>
+<tr>
+<td>Fix history</td>
+<td><code>flyway repair</code> (same locations as <code>migrate</code>)</td>
+</tr>
+<tr>
+<td>Drop everything</td>
+<td><code>flyway clean</code> (needs <code>cleanDisabled = false</code>, never in shared environments)</td>
+</tr>
+<tr>
+<td>Run in Docker</td>
+<td><code>docker run --rm -v /abs/path/flyway:/flyway/project redgate/flyway:13.12.2 -workingDirectory=project migrate</code></td>
+</tr>
+</tbody>
+</table>
+<p>Naming: <code>V&lt;version&gt;__&lt;description&gt;.sql</code> (two underscores), <code>R__&lt;description&gt;.sql</code>, <code>U&lt;version&gt;__...</code> is Teams. Versions may be <code>1</code>, <code>2</code>, <code>3_1</code>. Pack rule: lower-case snake_case descriptions.</p>
+<p>Settings (TOML, case-sensitive; env var is <code>FLYWAY_&lt;UPPER_SNAKE&gt;</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Pack value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cleanDisabled</code></td>
+<td><code>true</code></td>
+<td><code>true</code> (set <code>false</code> only in a scratch project)</td>
+</tr>
+<tr>
+<td><code>validateOnMigrate</code></td>
+<td><code>true</code></td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>outOfOrder</code></td>
+<td><code>false</code></td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>baselineOnMigrate</code></td>
+<td><code>false</code></td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>table</code></td>
+<td><code>flyway_schema_history</code></td>
+<td><code>FLYWAY_HISTORY_CALC_SUPPORT</code></td>
+</tr>
+<tr>
+<td><code>defaultSchema</code>, <code>schemas</code></td>
+<td></td>
+<td><code>CALC_SUPPORT</code></td>
+</tr>
+<tr>
+<td><code>locations</code></td>
+<td></td>
+<td><code>filesystem:migrations/common,...hybrid</code> or <code>...standard</code></td>
+</tr>
+<tr>
+<td><code>placeholders</code></td>
+<td></td>
+<td><code>calc_db</code>, <code>calc_schema</code>, <code>app_role</code>, <code>reader_role</code></td>
+</tr>
+</tbody>
+</table>
+<p>JDBC URL: <code>jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=&lt;DB&gt;&amp;warehouse=&lt;WH&gt;&amp;role=&lt;ROLE&gt;</code>. <code>db</code> and <code>warehouse</code> are mandatory. Key pair: add <code>&amp;authenticator=snowflake_jwt&amp;private_key_file=&lt;absolute path&gt;</code>.</p>
+<p>Not verified here: <code>-outputType=json</code> (TC-G11), <code>-target=&lt;version&gt;</code> (TC-08-06), <code>-ignoreMigrationPatterns='*:pending'</code> (TC-08-10), default <code>baselineVersion</code> (TC-G09), per-environment placeholders in TOML (TC-G10), the JVM flag for encrypted keys (TC-G21).</p>
+<p>Flyway on Snowflake: DDL commits immediately, so a failing multi-statement file leaves earlier statements applied. Parallel migrations are not available.</p>
+<h3 id="23-snow-sql-connections-and-key-pairs">2.3 <code>snow sql</code>, connections and key pairs</h3>
+<pre><code class="language-bash">snow connection test -c sbx_dev                                   # named connection from ~/.snowflake/connections.toml
+snow sql -c sbx_dev -q &quot;SELECT CURRENT_ROLE()&quot;                     # one statement
+snow sql -c sbx_dev -f scripts/smoke_clone.sql --database SBX_DEV_LAB5A --schema CALC_SUPPORT
+snow sql -x -q &quot;SELECT 1&quot; --format json                            # temporary connection from environment variables
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> Environment variables for a temporary connection (<code>-x</code>): <code>SNOWFLAKE_ACCOUNT</code>, <code>SNOWFLAKE_USER</code>, <code>SNOWFLAKE_ROLE</code>, <code>SNOWFLAKE_WAREHOUSE</code>, <code>SNOWFLAKE_DATABASE</code>, <code>SNOWFLAKE_SCHEMA</code>, <code>SNOWFLAKE_AUTHENTICATOR</code>, <code>SNOWFLAKE_PRIVATE_KEY_FILE</code>, <code>SNOWFLAKE_PRIVATE_KEY_RAW</code>, <code>SNOWFLAKE_TOKEN</code>. The key passphrase comes from <code>PRIVATE_KEY_PASSPHRASE</code> (https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-connections, read 2026-11-16). <code>connections.toml</code> wins over <code>config.toml</code> for connections.</p>
+</blockquote>
+<p>Key pair (VERIFIED, https://docs.snowflake.com/en/user-guide/key-pair-auth, read 2026-11-16):</p>
+<pre><code class="language-bash">openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 aes-256-cbc -inform PEM -out sbx_svc_cicd_rsa_key.p8      # encrypted, asks for a passphrase
+openssl rsa -in sbx_svc_cicd_rsa_key.p8 -pubout -out sbx_svc_cicd_rsa_key.pub
+openssl rsa -pubin -in sbx_svc_cicd_rsa_key.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64     # local fingerprint
+</code></pre>
+<pre><code class="language-sql">ALTER USER SBX_SVC_CICD SET RSA_PUBLIC_KEY = '&lt;PUBLIC_KEY_BODY&gt;';      -- body only, no BEGIN/END lines
+ALTER USER SBX_SVC_CICD SET RSA_PUBLIC_KEY_2 = '&lt;PUBLIC_KEY_BODY&gt;';    -- second slot for rotation
+ALTER USER SBX_SVC_CICD UNSET RSA_PUBLIC_KEY;
+DESC USER SBX_SVC_CICD;                                                 -- RSA_PUBLIC_KEY_FP
+</code></pre>
+<p>The newer named form is <code>ALTER USER &lt;u&gt; ADD KEY PAIR &lt;name&gt; PUBLIC_KEY = '...'</code>, with <code>SHOW USER KEY PAIRS</code>, <code>ROTATE KEY PAIR</code>, <code>REMOVE KEY PAIR</code>. Never put a private key in the repository, in a chat, or in a file under version control.</p>
+<h3 id="24-clones">2.4 Clones</h3>
+<pre><code class="language-sql">CREATE DATABASE SBX_DEV_LAB5A CLONE SBX_INT DATA_RETENTION_TIME_IN_DAYS = 0;                       -- database clone
+CREATE SCHEMA SBX_DEV_LAB5A.CALC_SUPPORT CLONE SBX_INT.CALC_SUPPORT IGNORE HYBRID TABLES;          -- schema clone without hybrid tables
+CALL SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE('LAB5A');                                      -- guarded: ticket 1 to 40 letters or digits
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('LAB5A');                                        -- only SBX_DEV_* can be dropped
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> Hybrid tables can be cloned only at database level; a schema clone containing hybrid tables fails unless <code>IGNORE HYBRID TABLES</code> is appended (and the clause also works on database clones); <code>CREATE HYBRID TABLE ... CLONE</code> fails with <code>391411 (0A000): This feature is not supported for hybrid tables: 'CLONE'.</code> (https://docs.snowflake.com/en/user-guide/tables-hybrid-clone, read 2026-11-16). Clones lose the Time Travel history of the source.</p>
+</blockquote>
+<p>Harmless negative tests for the guarded procedures: <code>'SBX_INT.X'</code>, <code>'NOPE; SELECT 1'</code>, <code>''</code>, <code>NULL</code>, a 41-letter string. All must be rejected before any SQL is built. Never test with a real database name.</p>
+<p>Facts to remember: sequences in a clone continue from the source values; clones keep the source objects' owners, so ownership must be uniform before hand-off; the cloned Flyway history can claim a migration ran whose hybrid table was not cloned.</p>
+<h3 id="25-grants-and-roles">2.5 Grants and roles</h3>
+<pre><code class="language-sql">GRANT ROLE SBX_CALC_DEV TO ROLE SBX_CICD_PIPELINE;                                                 -- role hierarchy (inheritance)
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON DATABASE SBX_INT TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT SELECT, INSERT ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT TO ROLE SBX_FN_CALC_ENGINE_NP;   -- append-only for the app
+GRANT USAGE ON SEQUENCE SBX_INT.CALC_SUPPORT.SEQ_AUDIT_EVENT_ID TO ROLE SBX_FN_CALC_ENGINE_NP;      -- needed for a sequence default
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+SHOW GRANTS TO ROLE SBX_FN_CALC_ENGINE_NP;
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+</code></pre>
+<p>Notes: inside a DCM project, <code>GRANT OWNERSHIP</code> cannot use <code>COPY CURRENT GRANTS</code> or <code>REVOKE CURRENT GRANTS</code> and fails if the object has other grants not in the project (TC-G25). <code>CREATE HYBRID TABLE</code> is now a separate schema privilege; schema owners do not need it (<code>GRANT CREATE HYBRID TABLE ON SCHEMA ...</code>, TC-G14). A <code>CREATE OR REPLACE</code> on a procedure drops its grants. Bulk <code>GRANT OWNERSHIP ON ALL ... IN SCHEMA</code> needs <code>MANAGE GRANTS</code> (error 3001 in NAIC work).</p>
+<p>Resource monitor (VERIFIED, https://docs.snowflake.com/en/sql-reference/sql/create-resource-monitor, read 2026-11-16):</p>
+<pre><code class="language-sql">USE ROLE ACCOUNTADMIN;
+CREATE RESOURCE MONITOR SBX_CALC_RM WITH CREDIT_QUOTA = 20 FREQUENCY = MONTHLY START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 50 PERCENT DO NOTIFY ON 80 PERCENT DO NOTIFY ON 90 PERCENT DO SUSPEND ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+ALTER WAREHOUSE SBX_CALC_WH SET RESOURCE_MONITOR = SBX_CALC_RM;
+</code></pre>
+<h3 id="26-github-actions-snippets">2.6 GitHub Actions snippets</h3>
+<pre><code class="language-yaml">concurrency: { group: deploy-int, cancel-in-progress: false }      # one deploy at a time, never kill a running one
+environment: int                                                    # waits for required reviewers
+permissions: { contents: read }                                     # least privilege; add id-token: write only for OIDC
+uses: snowflakedb/snowflake-actions@&lt;FULL_SHA&gt;                      # pin by commit SHA; resolve at lab time (TC-G22)
+if: always()                                                        # cleanup runs after failure or cancel
+</code></pre>
+<h3 id="27-git-for-you-the-learner">2.7 Git, for you, the learner</h3>
+<p>The assistant never runs <code>git commit</code>, <code>git push</code>, <code>git pull</code> or <code>git fetch</code> unless you name that exact action in that request. The commands you use:</p>
+<pre><code class="language-bash">git status                       # safe, read only
+git switch -c feature/LAB6A      # new branch
+git add &lt;files&gt;                  # stage by name, not by dot
+git commit -m &quot;ci: add workflows&quot;
+git push -u origin feature/LAB6A
+</code></pre>
+<p>Branch names for tickets match <code>feature/&lt;ticket&gt;</code> where the ticket is 1 to 40 letters or digits.</p>
+<h2 id="3-troubleshooting-table">3. Troubleshooting table</h2>
+<p>Errors seen in NAIC calc-engine work, plus the sandbox ones. A message is quoted only where a public page gives it. Otherwise the cause is described in plain words and the exact text is TO-CONFIRM. "NAIC" in the source column means the DCM branch notes or the clone procedure file (no real account or host names are reproduced here).</p>
+<table>
+<thead>
+<tr>
+<th>Symptom or code</th>
+<th>Where you see it</th>
+<th>Cause</th>
+<th>Fix or lesson</th>
+<th>Source and status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TLS certificate error when <code>snow dcm</code> uploads files</td>
+<td>Laptops on a corporate network with TLS inspection</td>
+<td>The inspection proxy re-signs traffic to the Snowflake stage storage endpoint with a certificate authority that lacks a Key Usage field. Python 3.13 and later rejects it. Login traffic is not inspected.</td>
+<td>Use a Python 3.12 environment for <code>snow</code>; point <code>REQUESTS_CA_BUNDLE</code> and <code>SSL_CERT_FILE</code> at the corporate CA bundle; ask the network team for a bypass or a reissued CA. Does not apply to a home laptop.</td>
+<td>NAIC notes. VERIFIED internally, not a public-docs fact.</td>
+</tr>
+<tr>
+<td><code>unexpected 'HYBRID'</code></td>
+<td><code>snow dcm plan</code> or <code>raw-analyze</code></td>
+<td>A <code>DEFINE HYBRID TABLE</code> is in the project. Hybrid tables are not in DCM's supported list.</td>
+<td>Keep hybrid tables in Flyway. The <code>validate.yml</code> lint greps for it.</td>
+<td>NAIC notes; docs list VERIFIED.</td>
+</tr>
+<tr>
+<td>Error 392105</td>
+<td><code>CREATE SCHEMA ... CLONE</code></td>
+<td>The schema contains hybrid tables and cannot be schema-cloned.</td>
+<td>Add <code>IGNORE HYBRID TABLES</code> immediately after the clone source. Recreate the tables empty.</td>
+<td>NAIC clone file.</td>
+</tr>
+<tr>
+<td><code>391411 (0A000): This feature is not supported for hybrid tables: 'CLONE'.</code></td>
+<td><code>CREATE HYBRID TABLE ... CLONE</code></td>
+<td>Table-level clone of a hybrid table.</td>
+<td>Clone the database, or skip hybrid tables and recreate them.</td>
+<td>Public docs, VERIFIED 2026-11-16.</td>
+</tr>
+<tr>
+<td>Error 1046</td>
+<td><code>GET_DDL</code> inside a procedure</td>
+<td><code>GET_DDL</code> needs a constant object name.</td>
+<td>One call per table with a literal name.</td>
+<td>NAIC clone file.</td>
+</tr>
+<tr>
+<td>Error 3001</td>
+<td><code>GRANT OWNERSHIP ON ALL ... IN SCHEMA</code></td>
+<td>Bulk ownership needs <code>MANAGE GRANTS</code>.</td>
+<td>Grant ownership object by object from <code>SHOW ... IN SCHEMA</code>.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td>Error 3645 (BCR-2395)</td>
+<td>Ownership transfer inside an owner's-rights procedure</td>
+<td>Ownership can go only to a role active in the session or by a role with <code>MANAGE GRANTS</code>.</td>
+<td>Grant the developer role to the owner role (inheritance), as bootstrap grant 1 does.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td>Error 2003</td>
+<td>Granting on built-in procedures</td>
+<td><code>SHOW PROCEDURES IN SCHEMA</code> lists Snowflake built-ins.</td>
+<td>Filter on <code>is_builtin = 'N'</code>.</td>
+<td>NAIC clone file.</td>
+</tr>
+<tr>
+<td>Error 1510</td>
+<td><code>snow dcm plan -D calc_db=...</code></td>
+<td>A string template value has no SQL quotes.</td>
+<td><code>-D "calc_db='SBX_DEV_LAB5A'"</code>.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td>Plan fails: database <code>SBX_DEV_SET_ON_CLI</code> does not exist</td>
+<td><code>--target CLONE</code> without <code>-D</code></td>
+<td>The safety placeholder database does not exist on purpose.</td>
+<td>Pass <code>-D "calc_db='...'"</code> and <code>-D "fin_db='...'"</code>. Exact text TC-10-05.</td>
+<td>Pack design, NAIC notes.</td>
+</tr>
+<tr>
+<td>Clone creation fails or hands over wrongly</td>
+<td>Clone procedure</td>
+<td>Objects in INT are owned by a role other than the owner role (for example created by <code>SYSADMIN</code>).</td>
+<td>Keep every engine object owned by <code>SBX_CICD_PIPELINE</code>; create objects with that role active.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td>"Unsupported statement type USE" when running a procedure in a clone</td>
+<td>Owner's-rights procedure</td>
+<td>The call passed a warehouse that made the procedure run <code>USE WAREHOUSE</code>.</td>
+<td>Set the warehouse on the session, not in the parameters.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td>Role cannot create a DCM project</td>
+<td><code>CREATE DCM PROJECT</code></td>
+<td>Role lacks <code>CREATE DCM PROJECT</code> on the schema.</td>
+<td><code>GRANT CREATE DCM PROJECT ON SCHEMA ... TO ROLE ...</code> (owners do not strictly need it).</td>
+<td>Public docs VERIFIED; NAIC notes.</td>
+</tr>
+<tr>
+<td>DCM ownership errors (cannot adopt, plan or deploy fails before changes)</td>
+<td><code>plan</code> / <code>deploy</code></td>
+<td>The project owner role must own the objects or hold the role that does. Objects owned by another role cannot be adopted until ownership is transferred or the roles are connected. Exact text not recorded.</td>
+<td>Grant the other role to the project owner role and add <code>GRANT OWNERSHIP</code> in the definitions, or transfer ownership first.</td>
+<td>Docs VERIFIED (lockout rule); message text TO-CONFIRM (TC-G25).</td>
+</tr>
+<tr>
+<td>DCM plan shows extra grants</td>
+<td>INT adoption</td>
+<td>Schema future grants from the platform add grants to new objects.</td>
+<td>Account for them in <code>access.sql</code> or leave them undeclared.</td>
+<td>NAIC notes.</td>
+</tr>
+<tr>
+<td><code>JWT token is invalid.</code> with a UUID, vendor code 390144</td>
+<td>Any key-pair login</td>
+<td>General wrapper. Specific causes: 394300 user not found (use <code>LOGIN_NAME</code>), 394301 missing times, 394302 issued more than 60 s ago (clock), 394303 expired, 394304 fingerprint mismatch, 394305 not RS256, 394306 signature invalid, 394307 wrong account.</td>
+<td>An administrator reads the code with <code>SELECT JSON_EXTRACT_PATH_TEXT(SYSTEM$GET_LOGIN_FAILURE_DETAILS('&lt;uuid&gt;'), 'errorCode');</code>. Compare <code>DESC USER</code> fingerprints.</td>
+<td>Public docs VERIFIED 2026-11-16. NAIC's own note on "expired key" is TO-CONFIRM (TC-10-02).</td>
+</tr>
+<tr>
+<td>Password login refused for a service account</td>
+<td>Service user</td>
+<td><code>TYPE = SERVICE</code> users can never use a password. Snowflake also blocks passwords for non-human users in accounts under the rollout phases.</td>
+<td>Use a key pair, or workload identity. Trial accounts are exempt from the phases but service users still cannot use passwords.</td>
+<td>Public docs VERIFIED.</td>
+</tr>
+<tr>
+<td>Hybrid table creation fails in a trial</td>
+<td>Probe in file 02</td>
+<td>Hybrid tables are not supported in trial accounts.</td>
+<td>Use Mode S, or convert the trial. Exact text TC-G01.</td>
+<td>Public docs VERIFIED; text TO-CONFIRM.</td>
+</tr>
+<tr>
+<td>Sequence cannot be found or accessed</td>
+<td>App role inserting into a table whose default is a sequence</td>
+<td>The role lacks <code>USAGE</code> on the sequence.</td>
+<td>Grant <code>USAGE</code> on the sequence (declare it in <code>grants/access.sql</code>).</td>
+<td>NAIC Calc Admin notes; Lab 7 break it.</td>
+</tr>
+<tr>
+<td>Flyway: connection works but migrations fail</td>
+<td><code>flyway info</code> or <code>migrate</code></td>
+<td>The JDBC URL has no <code>db</code> or no <code>warehouse</code>.</td>
+<td>Both are mandatory in the URL.</td>
+<td>Flyway docs VERIFIED.</td>
+</tr>
+<tr>
+<td>Flyway <code>validate</code> fails on checksum</td>
+<td>After editing an applied file</td>
+<td>Stored checksum differs.</td>
+<td>Undo the edit, or add a new migration. <code>repair</code> only if the change was deliberate.</td>
+<td>VERIFIED; drill 2.</td>
+</tr>
+<tr>
+<td>Flyway refuses to migrate after a failure</td>
+<td>History has a failed row</td>
+<td>A migration failed part-way; Snowflake DDL cannot roll back.</td>
+<td>Clean the leftovers by hand, <code>repair</code>, fix the file or add a new one, migrate.</td>
+<td>VERIFIED; drill 1.</td>
+</tr>
+<tr>
+<td>Flyway <code>clean</code> refused</td>
+<td><code>flyway clean</code></td>
+<td><code>cleanDisabled</code> is true by default.</td>
+<td>Leave it. Set <code>false</code> only in a scratch project.</td>
+<td>VERIFIED.</td>
+</tr>
+<tr>
+<td>Flyway cannot read the key file in Docker</td>
+<td><code>flyway_ci.sh</code></td>
+<td>The container user cannot read a mode-600 file, or the passphrase did not reach the JVM.</td>
+<td>See TC-08-02 and TC-G21.</td>
+<td>TO-CONFIRM.</td>
+</tr>
+<tr>
+<td>Workflow does not start: unable to resolve action</td>
+<td>Any workflow</td>
+<td>The placeholder <code>&lt;FULL_SHA_...&gt;</code> was not replaced.</td>
+<td>Resolve and paste the 40-character SHAs (file 08, step 5.3).</td>
+<td>Pack design.</td>
+</tr>
+<tr>
+<td>Environment shows no required reviewers</td>
+<td>GitHub, repository settings</td>
+<td>Private repository on a plan without that feature.</td>
+<td>Use a public repository, or a paid plan.</td>
+<td>Docs VERIFIED; your plan TC-08-03.</td>
+</tr>
+<tr>
+<td><code>Waiting for review</code> forever</td>
+<td><code>deploy-int</code></td>
+<td>You are the only reviewer and "Prevent self-review" is on.</td>
+<td>Untick it in the environment.</td>
+<td>Docs VERIFIED.</td>
+</tr>
+<tr>
+<td>Drop check fails</td>
+<td><code>pr-clone-check</code></td>
+<td>A definition was deleted, or a rename is being read as drop plus create.</td>
+<td>Restore the definition, or do the explicit Flyway rename first.</td>
+<td>Drill 3; Lab 4.</td>
+</tr>
+<tr>
+<td>Re-plan is not empty</td>
+<td>After deploy</td>
+<td>Something changed outside DCM, a definition differs in a detail, or a Flyway step altered a DCM-owned object.</td>
+<td>Read each change, fix the definition, or fix the owner of the object.</td>
+<td>Lab 3, Lab 4.</td>
+</tr>
+<tr>
+<td>Resource monitor does not trigger</td>
+<td>Drill 9</td>
+<td>Usage is tracked with a delay, or the quota is not reached.</td>
+<td>Wait, then <code>SHOW RESOURCE MONITORS</code>.</td>
+<td>TC-10-07.</td>
+</tr>
+<tr>
+<td>First sign-in asks for MFA</td>
+<td>Snowsight in a new trial</td>
+<td>Human sign-in requires MFA in most accounts. Duo is not available in trials.</td>
+<td>Use an authenticator app or passkey. Details TC-G19.</td>
+<td>Docs VERIFIED (Duo); prompt form TO-CONFIRM.</td>
+</tr>
+<tr>
+<td><code>snow</code> hangs at a prompt</td>
+<td><code>refresh_dev_clone.sh</code> run from a tool with no stdin</td>
+<td>The confirm prompt reads nothing and answers no.</td>
+<td>Run in a normal terminal or pass <code>--yes</code>.</td>
+<td>NAIC notes.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4-public-documentation-links">4. Public documentation links</h2>
+<p>Snowflake DCM Projects:
+- Overview: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview
+- Use and privileges: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use
+- Files and manifest: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-files
+- Supported entities: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities
+- CI/CD: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-cicd
+- Manage, unmanage, purge: https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage
+- <code>EXECUTE DCM PROJECT</code>: https://docs.snowflake.com/en/sql-reference/sql/execute-dcm-project
+- Snowflake CLI DCM commands: https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/overview (and <code>/plan</code>, <code>/deploy</code>, <code>/create</code>, <code>/list</code>, <code>/describe</code>, <code>/test</code>)</p>
+<p>Snowflake platform:
+- Hybrid tables: https://docs.snowflake.com/en/user-guide/tables-hybrid ; limitations: .../tables-hybrid-limitations ; cloning: .../tables-hybrid-clone ; <code>CREATE HYBRID TABLE</code>: https://docs.snowflake.com/en/sql-reference/sql/create-hybrid-table
+- New <code>CREATE HYBRID TABLE</code> privilege (BCR-2157): https://docs.snowflake.com/en/release-notes/bcr-bundles/2026_02/bcr-2157
+- Trial accounts: https://docs.snowflake.com/en/user-guide/admin-trial-account
+- Resource monitors: https://docs.snowflake.com/en/sql-reference/sql/create-resource-monitor and https://docs.snowflake.com/en/user-guide/resource-monitors
+- Key-pair authentication: https://docs.snowflake.com/en/user-guide/key-pair-auth and .../key-pair-auth-troubleshooting
+- Users and <code>TYPE = SERVICE</code>: https://docs.snowflake.com/en/user-guide/admin-user-management
+- MFA and password rollout: https://docs.snowflake.com/en/user-guide/security-mfa-rollout
+- Workload identity federation: https://docs.snowflake.com/en/user-guide/workload-identity-federation
+- Snowflake CLI connections: https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-connections
+- GitHub Action for the CLI: https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action and https://github.com/marketplace/actions/snowflake-actions</p>
+<p>Flyway:
+- Snowflake driver: https://documentation.red-gate.com/flyway/reference/database-driver-reference/snowflake
+- Feature summary (editions): https://documentation.red-gate.com/fd/feature-summary-165740620.html
+- Commands: https://documentation.red-gate.com/flyway/reference/commands
+- Docker: https://documentation.red-gate.com/flyway/reference/usage/flyway-docker
+- TOML configuration: https://www.red-gate.com/hub/product-learning/flyway/using-toml-configuration-files-with-flyway
+- Release notes: https://documentation.red-gate.com/flyway/release-notes-and-older-versions/release-notes-for-flyway-engine</p>
+<p>GitHub:
+- Environments: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+- Concurrency: https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs</p>
+<h2 id="5-open-items-for-file-13">5. Open items for file 13</h2>
+<p>TC-G01, TC-G03, TC-G04, TC-G09, TC-G10, TC-G11, TC-G14, TC-G19, TC-G21, TC-G22, TC-G25, TC-G26, TC-08-02, TC-08-03, TC-08-06, TC-08-10, TC-10-01, TC-10-02, TC-10-05, TC-10-07.</p>
+<h2 id="6-next">6. Next</h2>
+<p>Continue to <a href="13-open-questions-and-verification-log.md">the open questions and verification log</a>.</p>
+</body></html>

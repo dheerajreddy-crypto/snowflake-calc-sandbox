@@ -1,0 +1,373 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 1 (file 03): the old way, a calc engine built by hand</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-1-file-03-the-old-way-a-calc-engine-built-by-hand">Lab 1 (file 03): the old way, a calc engine built by hand</h1>
+<blockquote>
+<p>Lab no: 1 | File no: 03 | Time: 1 to 1.5 hours | Prerequisites: file 02 finished | Modes supported: H/S, D (unchanged in every mode) | Leaves behind: hand-made miniature engine in <code>SBX_INT.CALC_SUPPORT</code>, <code>sql/lab1/*</code> files, a written pain-point list.</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>Build a miniature calc engine the way NAIC did it before tooling: run SQL by hand, overwrite a procedure with <code>CREATE OR REPLACE</code>, edit a table in the UI, and then <strong>feel the problems</strong>: silent overwrite, drift between Git and Snowflake, no audit trail, no safe place to test. You finish with a written problem statement. Labs 2 to 11 solve it.</p>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world.</strong> The real engine was deployed by editing <code>sql/procedures.sql</code> (about 6,700 lines, 31 <code>CREATE OR REPLACE PROCEDURE</code> statements), pasting it into Snowsight and running it in INT. Evidence of drift found later: live objects with no DDL in Git (<code>SP_PROMOTE_METADATA</code>, <code>SP_TOP_STATES</code>, <code>FIN_CALCULATION_RESULT_DRAFT</code>, <code>DYNAMIC_FUNCTION_CONFIGS</code>, <code>PROMOTION_LOG</code>); <code>main</code> behind INT (no <code>FN_APPLY_REDIRECTS</code>, <code>SP_GET_ENV_REDIRECTS</code>, <code>ENV_CONFIG</code>); two Calc Admin hybrid tables, <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code>, created by hand on 2026-11-03 with no DDL in <code>sql/setup.sql</code>; mixed object owners (<code>ACCOUNTADMIN</code>, <code>SYSADMIN</code>, <code>CICD_PIPELINE</code>) that later broke clones. The deploy audit lived in GitLab, not in Snowflake. See file 01.</p>
+</blockquote>
+<p>The sandbox objects are the same shapes in miniature: <code>CALCULATIONS</code>, <code>FORMULAS</code>, <code>FORMULA_CATEGORIES</code>, <code>SEQ_CALC_ID</code>, <code>SP_REGISTER_CALCULATION</code> (the real one is <code>SP_REGISTER_CALCULATIONS</code>), <code>SP_ADD_CATEGORY</code>.</p>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (or Terminal with <code>snow sql -c sbx_owner -q "&lt;statement&gt;"</code>).</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+SHOW SCHEMAS IN DATABASE SBX_INT;
+SHOW GRANTS ON SCHEMA SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see: schema <code>CALC_SUPPORT</code> owned by <code>SBX_CICD_PIPELINE</code>. If the schema is missing or owned by someone else, the bootstrap in file 02 did not finish; rerun parts 2 and 4.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<ul>
+<li><strong>Imperative SQL.</strong> You tell Snowflake each action: create this, alter that. There is no memory of intent. Running the same file twice can create duplicates, fail, or change nothing, depending on how the statements were written.</li>
+<li><strong><code>CREATE OR REPLACE</code>.</strong> Drops and recreates an object in one statement. Safe to repeat, but it silently destroys whatever was live, including a newer version, and (for tables) the data. Grants on a replaced object must be reapplied.</li>
+<li><strong><code>CREATE ... IF NOT EXISTS</code>.</strong> Creates only if the name is free. It never updates an existing object, so it hides differences.</li>
+<li><strong>Drift.</strong> The live objects differ from the files in Git. It happens through hand edits, edits by someone else, and files that were never updated.</li>
+<li><strong><code>INFORMATION_SCHEMA</code>.</strong> Read-only views Snowflake provides in each database that describe its objects (tables, columns, procedures). You use it to detect drift.</li>
+<li><strong>Owner's rights procedure (<code>EXECUTE AS OWNER</code>).</strong> The procedure runs with the privileges of the role that owns it, not the caller. The real engine uses this widely.</li>
+<li><strong>Sequence.</strong> An object that hands out increasing numbers (<code>SEQ_CALC_ID.NEXTVAL</code>).</li>
+</ul>
+<pre><code class="language-text">   Git file (what we think exists)        Snowflake (what exists)
+   -------------------------------        -------------------------
+   procedures_v1.sql  ---- paste ------&gt;  SP_REGISTER_CALCULATION v1
+                                           ^
+   (nobody notices)       Dev B pastes ----+  SP_REGISTER_CALCULATION v-B  (overwrites)
+                          hand-edit   -----&gt;  CALCULATIONS + NOTES column (not in Git)
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-03-01]:</strong> the SQL in this lab is core Snowflake syntax (<code>CREATE SEQUENCE</code>, <code>CREATE TABLE ... DEFAULT &lt;seq&gt;.NEXTVAL</code>, Snowflake Scripting procedures with <code>SELECT ... INTO :var</code>, <code>INFORMATION_SCHEMA</code> views). It was not re-read against the docs on 2026-11-16. How to check: run it; any error names the line. If <code>SELECT &lt;seq&gt;.NEXTVAL INTO :v_id</code> is rejected, use <code>v_id := (SELECT &lt;seq&gt;.NEXTVAL);</code>. Record the working form in file 13.</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-51-create-the-table-and-sequence-files">Step 5.1 Create the table and sequence files</h3>
+<p>Run in: <strong>Terminal</strong>, inside your repository folder. Create <code>sql/lab1/tables_v1.sql</code>:</p>
+<pre><code class="language-sql">-- sql/lab1/tables_v1.sql   (Lab 1, version 1 of the &quot;Git file&quot;)
+USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+CREATE SEQUENCE IF NOT EXISTS SBX_INT.CALC_SUPPORT.SEQ_CALC_ID    START = 2001 INCREMENT = 1 NOORDER;
+CREATE SEQUENCE IF NOT EXISTS SBX_INT.CALC_SUPPORT.SEQ_FORMULA_ID START = 1    INCREMENT = 1 NOORDER;
+
+CREATE TABLE IF NOT EXISTS SBX_INT.CALC_SUPPORT.CALCULATIONS (
+  CALC_ID         NUMBER(38,0) NOT NULL DEFAULT SBX_INT.CALC_SUPPORT.SEQ_CALC_ID.NEXTVAL,
+  CALC_NAME       VARCHAR(200) NOT NULL,
+  CALC_STATUS     VARCHAR(10)  DEFAULT 'ACTIVE',     -- DRAFT, ACTIVE, INACTIVE
+  SOURCE_CALC_ID  NUMBER(38,0),
+  CREATED_BY      VARCHAR(255),
+  CREATED_AT      TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+  PRIMARY KEY (CALC_ID)
+);
+
+CREATE TABLE IF NOT EXISTS SBX_INT.CALC_SUPPORT.FORMULAS (
+  FORMULA_ID    NUMBER(38,0) NOT NULL DEFAULT SBX_INT.CALC_SUPPORT.SEQ_FORMULA_ID.NEXTVAL,
+  CALC_ID       NUMBER(38,0) NOT NULL,
+  FORMULA_TEXT  VARCHAR(4000),
+  PRIMARY KEY (FORMULA_ID)
+);
+
+CREATE TABLE IF NOT EXISTS SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES (
+  CATEGORY_ID    NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,
+  CATEGORY_NAME  VARCHAR(100) NOT NULL,
+  CREATED_BY     VARCHAR(255),
+  PRIMARY KEY (CATEGORY_ID)
+);
+</code></pre>
+<p>You should see: a new file. Nothing has run yet.</p>
+<blockquote>
+<p><strong>Note for later labs.</strong> The real <code>SEQ_CALC_ID</code> starts at 2001 (as in the branch definition). The pack adds <code>SEQ_FORMULA_ID</code> here because <code>FORMULAS</code> uses it. Lab 3 adopts both.</p>
+</blockquote>
+<h3 id="step-52-create-the-procedure-file">Step 5.2 Create the procedure file</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>sql/lab1/procedures_v1.sql</code>:</p>
+<pre><code class="language-sql">-- sql/lab1/procedures_v1.sql   (Lab 1, version 1 of the &quot;Git file&quot;)
+USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+CREATE OR REPLACE PROCEDURE SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    v_id NUMBER;
+BEGIN
+    SELECT SBX_INT.CALC_SUPPORT.SEQ_CALC_ID.NEXTVAL INTO :v_id;
+    INSERT INTO SBX_INT.CALC_SUPPORT.CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY)
+    VALUES (:v_id, :P_CALC_NAME, 'DRAFT', :P_USER);
+    RETURN TO_VARCHAR(:v_id);
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(P_CATEGORY_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    INSERT INTO SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES (CATEGORY_NAME, CREATED_BY)
+    SELECT :P_CATEGORY_NAME, :P_USER
+    WHERE NOT EXISTS (SELECT 1 FROM SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES WHERE CATEGORY_NAME = :P_CATEGORY_NAME);
+    RETURN 'OK';
+END;
+$$;
+</code></pre>
+<p>You should see: a new file. Notice that the bodies use <strong>fully qualified INT names</strong> (<code>SBX_INT.CALC_SUPPORT....</code>). The real engine procedures do the same, and that is exactly why a clone needs a redirect mechanism (Lab 5).</p>
+<p><code>SP_ADD_CATEGORY</code> is idempotent: calling it twice with the same name inserts one row. <code>SP_REGISTER_CALCULATION</code> is not: each call creates a new draft.</p>
+<h3 id="step-53-create-the-seed-and-drift-files">Step 5.3 Create the seed and drift files</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>sql/lab1/seed_v1.sql</code>:</p>
+<pre><code class="language-sql">-- sql/lab1/seed_v1.sql   run ONCE; it is not idempotent for the two CALL statements
+USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+CALL SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION('MINI_LIFE_RATIO',     'LAB1');
+CALL SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION('MINI_PROPERTY_TOTAL', 'LAB1');
+
+UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS
+   SET CALC_STATUS = 'ACTIVE'
+ WHERE CALC_NAME IN ('MINI_LIFE_RATIO', 'MINI_PROPERTY_TOTAL') AND CALC_STATUS &lt;&gt; 'ACTIVE';
+
+CALL SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY('RATIO', 'LAB1');
+CALL SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY('TOTAL', 'LAB1');
+
+INSERT INTO SBX_INT.CALC_SUPPORT.FORMULAS (CALC_ID, FORMULA_TEXT)
+SELECT CALC_ID,
+       CASE CALC_NAME WHEN 'MINI_LIFE_RATIO' THEN 'NUMERATOR / DENOMINATOR' ELSE 'SUM(AMOUNT)' END
+  FROM SBX_INT.CALC_SUPPORT.CALCULATIONS
+ WHERE CALC_NAME IN ('MINI_LIFE_RATIO', 'MINI_PROPERTY_TOTAL');
+</code></pre>
+<p>And <code>sql/lab1/drift_detective.sql</code>:</p>
+<pre><code class="language-sql">-- sql/lab1/drift_detective.sql   compares live columns with the list the Git file creates
+USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+WITH expected (TABLE_NAME, COLUMN_NAME) AS (
+  SELECT column1, column2 FROM VALUES
+    ('CALCULATIONS','CALC_ID'), ('CALCULATIONS','CALC_NAME'), ('CALCULATIONS','CALC_STATUS'),
+    ('CALCULATIONS','SOURCE_CALC_ID'), ('CALCULATIONS','CREATED_BY'), ('CALCULATIONS','CREATED_AT'),
+    ('FORMULAS','FORMULA_ID'), ('FORMULAS','CALC_ID'), ('FORMULAS','FORMULA_TEXT'),
+    ('FORMULA_CATEGORIES','CATEGORY_ID'), ('FORMULA_CATEGORIES','CATEGORY_NAME'), ('FORMULA_CATEGORIES','CREATED_BY')
+),
+live AS (
+  SELECT TABLE_NAME, COLUMN_NAME
+    FROM SBX_INT.INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = 'CALC_SUPPORT'
+)
+SELECT 'IN_LIVE_NOT_IN_FILE' AS DRIFT, l.TABLE_NAME, l.COLUMN_NAME
+  FROM live l LEFT JOIN expected e ON e.TABLE_NAME = l.TABLE_NAME AND e.COLUMN_NAME = l.COLUMN_NAME
+ WHERE e.COLUMN_NAME IS NULL
+UNION ALL
+SELECT 'IN_FILE_NOT_IN_LIVE', e.TABLE_NAME, e.COLUMN_NAME
+  FROM expected e LEFT JOIN live l ON e.TABLE_NAME = l.TABLE_NAME AND e.COLUMN_NAME = l.COLUMN_NAME
+ WHERE l.COLUMN_NAME IS NULL
+ORDER BY 1, 2, 3;
+
+-- Procedures: the definition text and a fingerprint of it.
+-- Note the fingerprint after Step 5.5 and compare it after Step 5.7.
+SELECT PROCEDURE_NAME, LAST_ALTERED, SHA2(PROCEDURE_DEFINITION) AS DEFINITION_FINGERPRINT
+  FROM SBX_INT.INFORMATION_SCHEMA.PROCEDURES
+ WHERE PROCEDURE_SCHEMA = 'CALC_SUPPORT'
+ ORDER BY PROCEDURE_NAME;
+
+-- Tables and other objects the file does not know about
+SELECT TABLE_NAME, TABLE_TYPE, CREATED, LAST_ALTERED
+  FROM SBX_INT.INFORMATION_SCHEMA.TABLES
+ WHERE TABLE_SCHEMA = 'CALC_SUPPORT'
+ ORDER BY TABLE_NAME;
+</code></pre>
+<h3 id="step-54-run-the-files">Step 5.4 Run the files</h3>
+<p>Run in: <strong>Terminal</strong> (activate your venv first).</p>
+<pre><code class="language-bash">snow sql -c sbx_owner -f sql/lab1/tables_v1.sql
+snow sql -c sbx_owner -f sql/lab1/procedures_v1.sql
+snow sql -c sbx_owner -f sql/lab1/seed_v1.sql
+</code></pre>
+<p>You should see: no errors; the two <code>CALL</code> statements return <code>2001</code> and <code>2002</code> (the sequence starts at 2001, so these are the first two ids; if you ran the seed twice you will see larger ids).</p>
+<h3 id="step-55-look-at-the-state-and-record-a-baseline">Step 5.5 Look at the state and record a baseline</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>.</p>
+<pre><code class="language-sql">SELECT * FROM SBX_INT.CALC_SUPPORT.CALCULATIONS ORDER BY CALC_ID;
+SELECT * FROM SBX_INT.CALC_SUPPORT.FORMULAS;
+SELECT * FROM SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES;
+</code></pre>
+<p>You should see: two calculations, <code>MINI_LIFE_RATIO</code> (2001) and <code>MINI_PROPERTY_TOTAL</code> (2002), both <code>ACTIVE</code>; two formulas; two categories, <code>RATIO</code> and <code>TOTAL</code>.</p>
+<p>Now run the drift detective file. You should see: the first query returns <strong>no rows</strong> (live equals file), the second lists both procedures with fingerprints. <strong>Write down the fingerprint of <code>SP_REGISTER_CALCULATION</code>.</strong> This is your stand-in for "what Git says".</p>
+<p>Commit the four <code>sql/lab1/*</code> files yourself when you are ready (<code>git add</code>, <code>git commit</code>). Nothing in this lab needs a push.</p>
+<h3 id="step-56-a-second-developer-overwrites-the-procedure">Step 5.6 A second developer overwrites the procedure</h3>
+<p>Developer B pastes a different version into a worksheet. In the sandbox the same role plays developer B.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>.</p>
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    v_id NUMBER;
+BEGIN
+    SELECT SBX_INT.CALC_SUPPORT.SEQ_CALC_ID.NEXTVAL INTO :v_id;
+    INSERT INTO SBX_INT.CALC_SUPPORT.CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY)
+    VALUES (:v_id, UPPER(:P_CALC_NAME), 'ACTIVE', :P_USER);   -- Dev B &quot;improvement&quot;: upper-case names, skip the draft state
+    RETURN TO_VARCHAR(:v_id);
+END;
+$$;
+</code></pre>
+<p>You should see: <code>Function SP_REGISTER_CALCULATION successfully created.</code> (the message wording may differ). <strong>No warning appeared</strong> that you replaced a version someone else owned. Run the drift detective again. You should see: a different <code>DEFINITION_FINGERPRINT</code> and a newer <code>LAST_ALTERED</code> for <code>SP_REGISTER_CALCULATION</code>. Nothing in Git changed, so <code>git status</code> shows a clean tree.</p>
+<p>Restore the Git version by re-running <code>procedures_v1.sql</code>:</p>
+<pre><code class="language-bash">snow sql -c sbx_owner -f sql/lab1/procedures_v1.sql
+</code></pre>
+<p>You should see: the fingerprint equals the one you wrote down. The overwrite and restore worked only because <strong>you knew</strong> the file was the truth.</p>
+<h3 id="step-57-edit-a-table-by-hand-in-the-ui">Step 5.7 Edit a table by hand in the UI</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>. This is what a colleague does at 5 pm to "just add a column".</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.CALC_SUPPORT.CALCULATIONS ADD COLUMN NOTES VARCHAR(500);
+UPDATE SBX_INT.CALC_SUPPORT.CALCULATIONS SET NOTES = 'checked by hand' WHERE CALC_ID = 2001;
+</code></pre>
+<p>Run the drift detective. You should see: the first query returns one row, <code>IN_LIVE_NOT_IN_FILE | CALCULATIONS | NOTES</code>. Re-running <code>tables_v1.sql</code> does <strong>not</strong> fix it: <code>CREATE TABLE IF NOT EXISTS</code> sees the table and does nothing, so it hides the drift.</p>
+<h3 id="step-58-no-audit-trail">Step 5.8 No audit trail</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-sql">SELECT QUERY_TEXT, USER_NAME, ROLE_NAME, START_TIME
+  FROM TABLE(SBX_INT.INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT =&gt; 200))
+ WHERE QUERY_TEXT ILIKE '%CREATE OR REPLACE PROCEDURE%'
+ ORDER BY START_TIME DESC;
+</code></pre>
+<p>You should see: your own statements, with your user name for both "developers" because you were one person. In a team on a shared service user, you would see the same name for everyone. Query history is short-lived and not a deployment record: it does not say which Git commit or ticket the change belongs to.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-03-02]:</strong> how far back <code>INFORMATION_SCHEMA.QUERY_HISTORY</code> reaches and which columns it shows in your edition. How to check: the output above and the Snowflake docs page for <code>QUERY_HISTORY</code>. Record in file 13.</p>
+</blockquote>
+<h3 id="step-59-no-safe-test-environment">Step 5.9 No safe test environment</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>.</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION('TRY_NEW_IDEA', 'LAB1');
+SELECT * FROM SBX_INT.CALC_SUPPORT.CALCULATIONS ORDER BY CALC_ID;
+</code></pre>
+<p>You should see: a third row <code>TRY_NEW_IDEA</code> as <code>DRAFT</code>. To test a procedure you had to write to the "real" table. In NAIC the equivalent test would write to INT, which other people use. Remove the test row by hand:</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_NAME = 'TRY_NEW_IDEA';
+</code></pre>
+<p>Notice that the sequence does not go back: the next id is 2004 or higher. A hand cleanup leaves traces.</p>
+<h3 id="step-510-write-your-pain-points-and-the-problem-statement">Step 5.10 Write your pain points and the problem statement</h3>
+<p>Run in: <strong>your editor</strong>. Create <code>docs/learning/my-notes/lab1-pain-points.md</code> (this file is yours; the pack does not contain it). List at least:</p>
+<ol>
+<li>A silent overwrite (Step 5.6) and how you noticed it.</li>
+<li>Drift in a table (Step 5.7) and that <code>IF NOT EXISTS</code> hid it.</li>
+<li>No record of who changed what and why (Step 5.8).</li>
+<li>No safe place to test (Step 5.9).</li>
+<li>No preview: you cannot ask "what would this file change?" before running it.</li>
+<li>One more of your own.</li>
+</ol>
+<p>Then complete this sentence in your own words: "We need a way to ______ so that ______."</p>
+<p>A good answer: "We need a way to declare the intended state of the database objects in files, preview the difference, and apply it from a pipeline, so that the live objects always match Git, every change has an author and a review, and developers test in a copy and not in the shared environment."</p>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Why did re-running <code>tables_v1.sql</code> not remove the <code>NOTES</code> column or report it?</li>
+<li>What is the difference between <code>CREATE OR REPLACE</code> and <code>CREATE ... IF NOT EXISTS</code>, and what risk does each have?</li>
+<li>How did the drift detective know the procedure changed? What would it miss (give one example)?</li>
+<li>Why did the two "developers" look like one user in the query history?</li>
+<li>Why is <code>SP_ADD_CATEGORY</code> safe to run twice but <code>SP_REGISTER_CALCULATION</code> is not?</li>
+<li>In the real engine, which two problems did hand-pasting <code>procedures.sql</code> into INT cause (use file 01)?</li>
+<li>The procedure bodies hold <code>SBX_INT...</code> names. What goes wrong if you clone the schema and call the procedure in the clone?</li>
+</ol>
+<p>Answers:</p>
+<ol>
+<li><code>IF NOT EXISTS</code> skips an existing table, so it never compares columns.</li>
+<li><code>OR REPLACE</code> always overwrites (destroys newer work and, for tables, data and grants). <code>IF NOT EXISTS</code> never updates (hides differences).</li>
+<li>Through a changed <code>SHA2</code> of <code>PROCEDURE_DEFINITION</code> and <code>LAST_ALTERED</code>. It misses grants, owners, comments and any property it does not query.</li>
+<li>Both used the same role and login. Snowflake logs the user, not the person or ticket behind it.</li>
+<li>The insert in <code>SP_ADD_CATEGORY</code> has a <code>NOT EXISTS</code> guard; <code>SP_REGISTER_CALCULATION</code> takes a new sequence value each call.</li>
+<li>Any two of: silent revert of newer code (<code>main</code> behind INT), live objects without DDL in Git, mixed owners that broke clones, no deploy audit, hot fixes overwritten.</li>
+<li>The call in the clone still writes to <code>SBX_INT</code> because the name is fully qualified. Lab 5 shows redirects.</li>
+</ol>
+<h2 id="7-break-it">7. Break it</h2>
+<p><strong>Exercise: a developer without rights tries to deploy.</strong> Run in <strong>Snowsight worksheet</strong>, role <code>SBX_CALC_DEV</code>:</p>
+<pre><code class="language-sql">USE ROLE SBX_CALC_DEV;
+CREATE OR REPLACE PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(P_CATEGORY_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'HACK'; END; $$;
+</code></pre>
+<ul>
+<li><strong>Symptom:</strong> an error about insufficient privileges (the exact text is not recorded in this pack; copy it into your notes).</li>
+<li><strong>Diagnosis:</strong> <code>SBX_CALC_DEV</code> has <code>USAGE</code> on the schema but does not own it and has no <code>CREATE PROCEDURE</code> right there. Check with <code>SHOW GRANTS ON SCHEMA SBX_INT.CALC_SUPPORT;</code>.</li>
+<li><strong>Recovery:</strong> nothing to recover, nothing changed. Switch back with <code>USE ROLE SBX_CICD_PIPELINE;</code>.</li>
+<li><strong>Lesson:</strong> ownership is what protects objects. The real clones broke when objects had different owners, which is why every INT object ended up owned by <code>CICD_PIPELINE</code>. Without a tool, ownership is the only guard.</li>
+</ul>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation of "no tooling"</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Silent overwrite by <code>CREATE OR REPLACE</code></td>
+<td>Step 5.6</td>
+<td>Pipeline-only deploy with review (Lab 6), DCM plan (Lab 3)</td>
+<td>VERIFIED by running</td>
+</tr>
+<tr>
+<td>Drift between Git and live</td>
+<td>Step 5.7</td>
+<td>DCM plan as a drift detector (Lab 3), ownership rules</td>
+<td>VERIFIED by running</td>
+</tr>
+<tr>
+<td><code>IF NOT EXISTS</code> hides differences</td>
+<td>Step 5.7</td>
+<td>Declarative diff (DCM) or numbered migrations (Flyway)</td>
+<td>VERIFIED by running</td>
+</tr>
+<tr>
+<td>No audit trail with author, ticket, commit</td>
+<td>Step 5.8</td>
+<td>Git history plus pipeline logs; Flyway history; DCM deployment history</td>
+<td>VERIFIED by running</td>
+</tr>
+<tr>
+<td>No safe test environment</td>
+<td>Step 5.9</td>
+<td>Zero-copy clones (Lab 5)</td>
+<td>VERIFIED by running</td>
+</tr>
+<tr>
+<td>No preview of a change</td>
+<td>whole lab</td>
+<td>DCM <code>plan</code> (Lab 3); Flyway <code>info</code> shows only pending files</td>
+<td>VERIFIED by running</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>Hand-run SQL has no memory: <code>OR REPLACE</code> overwrites, <code>IF NOT EXISTS</code> ignores differences.</li>
+<li>Drift is easy to create and invisible unless you go looking with queries.</li>
+<li>A shared login destroys the audit trail.</li>
+<li>Testing in the real schema leaves traces (rows, sequence gaps).</li>
+<li>The real engine had every one of these problems, and the tooling in the next labs exists to remove them.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Keep every object: Lab 3 adopts them and Lab 2 clones them. Remove the hand-added column so the live shape equals the Git files again (Lab 2's baseline and Lab 3's adoption assume that shape; Lab 3 recreates drift on purpose):</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.CALC_SUPPORT.CALCULATIONS DROP COLUMN NOTES;
+</code></pre>
+<p>Run the drift detective once more. You should see: no rows from the first query. Then run <code>ALTER WAREHOUSE SBX_CALC_WH SUSPEND;</code> at the end of your session.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p><code>SBX_INT.CALC_SUPPORT</code> holds, hand-made: <code>SEQ_CALC_ID</code>, <code>SEQ_FORMULA_ID</code>, <code>CALCULATIONS</code>, <code>FORMULAS</code>, <code>FORMULA_CATEGORIES</code>, <code>SP_REGISTER_CALCULATION</code> (v1, overwritten once and restored), <code>SP_ADD_CATEGORY</code>, with seed rows (calc ids 2001 and 2002, two categories, two formulas). <code>sql/lab1/*</code> is created (committed by you). Pain-point list written. Objects are owned by <code>SBX_CICD_PIPELINE</code>.</p>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-03-01, TC-03-02.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Go to <a href="04-lab2-flyway-fundamentals.md">04-lab2-flyway-fundamentals.md</a>.</p>
+</body></html>

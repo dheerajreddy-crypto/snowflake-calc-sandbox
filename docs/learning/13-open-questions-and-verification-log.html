@@ -1,0 +1,1202 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>13. Open questions and verification log</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="13-open-questions-and-verification-log">13. Open questions and verification log</h1>
+<blockquote>
+<p><strong>File no:</strong> 13 | <strong>Kind:</strong> reference | <strong>Prerequisites:</strong> none | <strong>Read date for public docs facts:</strong> 2026-11-16 | <strong>Modes:</strong> all</p>
+</blockquote>
+<p>The author wrote this pack without access to a Snowflake account, so no command in it was run. Part A lists every fact that was <strong>not</strong> verified against a public page, with the check to run at lab time. Part B lists what <strong>was</strong> read on a public page and when. Fill the "Result at lab time" line of each item as you meet it. If a result differs from the docs, the lab text is wrong, not you: tell the assistant and fix the lab file.</p>
+<p>Honest limits:</p>
+<ul>
+<li>Nothing here was executed. "Expected if the docs are right" is a prediction, not an observation.</li>
+<li>Facts marked VERIFIED were read on 2026-11-16 and can change. Re-check the pins (Snowflake CLI 3.33.0, Flyway 13.12.2, the image digest) at lab time.</li>
+<li>Snowflake error texts and numeric error codes are quoted only where a public page gives them. Others are described, and you paste the real text.</li>
+<li>Each block below lists the lab files that cite the id. Where the list is short, the id is used in one place only.</li>
+</ul>
+<h2 id="probe-results-fill-in-during-file-02">Probe results (fill in during file 02)</h2>
+<table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Date</th>
+<th>Result</th>
+<th>Mode set</th>
+<th>Exact error text (paste)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Probe H (<code>CREATE HYBRID TABLE</code>)</td>
+<td></td>
+<td></td>
+<td><code>HYBRID_MODE</code> = H or S</td>
+<td></td>
+</tr>
+<tr>
+<td>Probe D (<code>CREATE DCM PROJECT</code>)</td>
+<td></td>
+<td></td>
+<td><code>DCM_MODE</code> = on or off</td>
+<td></td>
+</tr>
+<tr>
+<td>Snowflake CLI version (<code>snow --version</code>)</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Flyway version (<code>flyway -v</code>)</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="part-a-open-questions">Part A. Open questions</h2>
+<p>Order: global ids <code>TC-G..</code> first, then file-local ids by file number.</p>
+<h3 id="tc-g01-exact-error-when-creating-a-hybrid-table-in-a-trial">TC-G01: Exact error when creating a hybrid table in a trial</h3>
+<ul>
+<li>Where used: file 02, file 09, file 12</li>
+<li>What we could not verify: Exact error when creating a hybrid table in a trial.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Run Probe H, copy the error; Run <code>CREATE HYBRID TABLE</code> in the trial and paste the error. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g02-whether-create-dcm-project-works-in-a-trial">TC-G02: Whether CREATE DCM PROJECT works in a trial</h3>
+<ul>
+<li>Where used: file 02, file 05</li>
+<li>What we could not verify: Whether CREATE DCM PROJECT works in a trial.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Run Probe D; Step 3.2: <code>snow dcm create ...</code>; copy error if it fails. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g03-exact-define-grammar-for-procedure-sequence-function-view-schema-role-warehouse">TC-G03: Exact DEFINE grammar for PROCEDURE, SEQUENCE, FUNCTION, VIEW, SCHEMA, ROLE, WAREHOUSE</h3>
+<ul>
+<li>Where used: file 05, file 09, file 11, file 12</li>
+<li>What we could not verify: Exact DEFINE grammar for PROCEDURE, SEQUENCE, FUNCTION, VIEW, SCHEMA, ROLE, WAREHOUSE.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: deploy; read the error; follow links on the supported-entities page; Supported-entities page links; <code>snow init --template dcm_project</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g04-saved-plan-file-name-plan_resultjson-vs-planjson">TC-G04: Saved plan file name (plan_result.json vs plan.json)</h3>
+<ul>
+<li>Where used: file 05, file 07, file 08, file 10, file 12</li>
+<li>What we could not verify: Saved plan file name (plan_result.json vs plan.json).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: <code>ls dcm/lab3_scratch/out/</code> after the first plan; <code>ls dcm/calc_engine/out/</code>; <code>ls dcm/calc_engine/out/</code> after <code>--save-output</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g05-sequence-counter-after-define-redeploy">TC-G05: Sequence counter after DEFINE redeploy</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: Sequence counter after DEFINE redeploy.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 3.18 experiment. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g06-rename-seen-by-dcm-as-drop-create">TC-G06: Rename seen by DCM as drop + create</h3>
+<ul>
+<li>Where used: file 05, file 06, file 10, file 11</li>
+<li>What we could not verify: Rename seen by DCM as drop + create.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 3.19 plan text; Step 4.9 protocol step 2; Read the plan after renaming a definition. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g07-define-table-on-an-existing-hybrid-table-adopt-fail-alter">TC-G07: DEFINE TABLE on an existing hybrid table (adopt, fail, alter)</h3>
+<ul>
+<li>Where used: file 06</li>
+<li>What we could not verify: DEFINE TABLE on an existing hybrid table (adopt, fail, alter).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 4.8, plan only, never deploy. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g08-flyway-parsing-of-procedure-and-scripting-blocks-with-semicolons">TC-G08: Flyway parsing of $$ procedure and Scripting blocks with semicolons</h3>
+<ul>
+<li>Where used: file 04, file 06, file 11</li>
+<li>What we could not verify: Flyway parsing of $$ procedure and Scripting blocks with semicolons.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 5.9; Step 4.7 <code>flyway migrate</code>; Run <code>flyway migrate</code> on <code>V4</code>/<code>V7</code> of the capstone. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g09-default-baselineversion">TC-G09: Default baselineVersion</h3>
+<ul>
+<li>Where used: file 04, file 12</li>
+<li>What we could not verify: Default baselineVersion.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Flyway docs or <code>baseline</code> without the flag in a throwaway schema; Flyway docs. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g10-per-environment-placeholders-in-flywaytoml">TC-G10: Per-environment placeholders in flyway.toml</h3>
+<ul>
+<li>Where used: file 04, file 08, file 12</li>
+<li>What we could not verify: Per-environment placeholders in flyway.toml.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Avoided; env vars and <code>-placeholders.x</code> used; Run <code>flyway info</code> with <code>FLYWAY_PLACEHOLDERS_CALC_DB</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g11-outputtypejson-flag-name">TC-G11: -outputType=json flag name</h3>
+<ul>
+<li>Where used: file 04, file 12</li>
+<li>What we could not verify: -outputType=json flag name.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Run <code>info</code> with the flag; <code>flyway -?</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g12-one-statement-create-user-type-service-rsa_public_key">TC-G12: One-statement CREATE USER ... TYPE = SERVICE ... RSA_PUBLIC_KEY</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: One-statement CREATE USER ... TYPE = SERVICE ... RSA_PUBLIC_KEY.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: <code>CREATE USER</code> reference page (pack uses three statements). The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g13-oidcwif-users-in-trial-accounts">TC-G13: OIDC/WIF users in trial accounts</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: OIDC/WIF users in trial accounts.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Run the <code>CREATE USER ... WORKLOAD_IDENTITY</code> statement. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g14-grant-create-hybrid-table-on-schema-syntax-and-whether-schema-owners-need-it">TC-G14: GRANT CREATE HYBRID TABLE ON SCHEMA syntax and whether schema owners need it</h3>
+<ul>
+<li>Where used: file 02, file 06, file 12</li>
+<li>What we could not verify: GRANT CREATE HYBRID TABLE ON SCHEMA syntax and whether schema owners need it.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: GRANT reference; line is commented in bootstrap; only if Step 4.3 fails with insufficient privileges; Grant reference page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g15-database-clone-with-hybrid-tables-and-retention-0">TC-G15: Database clone with hybrid tables and retention 0</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: Database clone with hybrid tables and retention 0.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Steps 5.4 and 5.9. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g16-minimum-snowflake-cli-for-dcm-3240-docs-vs-316-naic-notes">TC-G16: Minimum Snowflake CLI for DCM: 3.24.0 (docs) vs 3.16 (NAIC notes)</h3>
+<ul>
+<li>Where used: file 02, file 05, file 08</li>
+<li>What we could not verify: Minimum Snowflake CLI for DCM: 3.24.0 (docs) vs 3.16 (NAIC notes).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: <code>snow --version</code>, DCM usage page; <code>snow dcm --help</code> on the installed version; PyPI and docs at lab time. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g17-official-ga-statement-for-dcm-projects">TC-G17: Official GA statement for DCM Projects</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: Official GA statement for DCM Projects.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Snowflake release notes. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g18-credit-equivalence-of-the-400-trial-balance">TC-G18: Credit equivalence of the "$400" trial balance</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Credit equivalence of the "$400" trial balance.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Balance tile after sign-up. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g19-first-login-mfa-form-in-a-trial">TC-G19: First-login MFA form in a trial</h3>
+<ul>
+<li>Where used: file 02, file 12</li>
+<li>What we could not verify: First-login MFA form in a trial.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Observe at sign-up. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g20-manifest-layout-for-env_vars-env_secrets">TC-G20: Manifest layout for env_vars / env_secrets</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: Manifest layout for env_vars / env_secrets.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: docs page dcm-projects-files. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g21-key-pair-jvm-flag-for-encrypted-keys-in-flyway-13122">TC-G21: Key-pair JVM flag for encrypted keys in Flyway 13.12.2</h3>
+<ul>
+<li>Where used: file 02, file 04, file 06, file 08, file 12</li>
+<li>What we could not verify: Key-pair JVM flag for encrypted keys in Flyway 13.12.2.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: If <code>info</code> fails with key decryption error; <code>flyway info</code> error; retry with JAVA_OPTS; Run <code>scripts/flyway_ci.sh info</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g22-current-sha-and-inputs-of-snowflakedbsnowflake-actions-dcm-sub-actions">TC-G22: Current SHA and inputs of snowflakedb/snowflake-actions DCM sub-actions</h3>
+<ul>
+<li>Where used: file 08, file 12</li>
+<li>What we could not verify: Current SHA and inputs of snowflakedb/snowflake-actions DCM sub-actions.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Action README on GitHub. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g22b-actionscheckout-version-to-pin">TC-G22b: actions/checkout version to pin</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: actions/checkout version to pin.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Newest release on GitHub. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g23-timestamp_tz-in-secondary-hybrid-indexes">TC-G23: TIMESTAMP_TZ in secondary hybrid indexes</h3>
+<ul>
+<li>Where used: no lab step cites it as written (kept so the id is not lost)</li>
+<li>What we could not verify: TIMESTAMP_TZ in secondary hybrid indexes.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: see the TO-CONFIRM callout in the file(s) above. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g24-edition-requirement-for-hybrid-tables">TC-G24: Edition requirement for hybrid tables</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Edition requirement for hybrid tables.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: "Hybrid tables clouds and regions" page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g25-grant-ownership-inside-dcm-with-pre-existing-grants">TC-G25: GRANT OWNERSHIP inside DCM with pre-existing grants</h3>
+<ul>
+<li>Where used: file 05, file 12</li>
+<li>What we could not verify: GRANT OWNERSHIP inside DCM with pre-existing grants.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 3.21 experiment; Try it and paste the text. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g26-flags-of-snow-dcm-previewpurgedropdrop-deploymentlist-deployments">TC-G26: Flags of snow dcm preview/purge/drop/drop-deployment/list-deployments</h3>
+<ul>
+<li>Where used: file 05, file 12</li>
+<li>What we could not verify: Flags of snow dcm preview/purge/drop/drop-deployment/list-deployments.</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: <code>snow dcm &lt;cmd&gt; --help</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g27-connectionstoml-form-for-key-pair-private_key_file">TC-G27: connections.toml form for key-pair (private_key_file)</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: connections.toml form for key-pair (private_key_file).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: <code>snow connection add</code> for <code>sbx_cicd</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g28-flyway-authentication-with-workload-identity-not-listed-in-docs">TC-G28: Flyway authentication with workload identity (not listed in docs)</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: Flyway authentication with workload identity (not listed in docs).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Flyway driver page and release notes. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-g29-ignore-hybrid-tables-when-the-schema-has-no-hybrid-tables-mode-s-clone">TC-G29: IGNORE HYBRID TABLES when the schema has no hybrid tables (Mode S clone)</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: IGNORE HYBRID TABLES when the schema has no hybrid tables (Mode S clone).</li>
+<li>Why it matters: The labs rely on this fact as written; a different result changes the step that uses it.</li>
+<li>How to verify at lab time: Step 5.2. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-01-where-snowsight-shows-the-account-identifier">TC-02-01: Where Snowsight shows the account identifier</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Where Snowsight shows the account identifier.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Account menu. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-02-core-ddl-in-bootstrap-roles-db-schema-warehouse-future-grants-ownership-by-securityadmin-not-re-read">TC-02-02: Core DDL in bootstrap (roles, DB, schema, warehouse, future grants, ownership by SECURITYADMIN) not re-read</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Core DDL in bootstrap (roles, DB, schema, warehouse, future grants, ownership by SECURITYADMIN) not re-read.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the bootstrap. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-03-python-versions-supported-by-cli-3330">TC-02-03: Python versions supported by CLI 3.33.0</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Python versions supported by CLI 3.33.0.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>pip install</code> result, PyPI. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-04-docker-image-v-flag-and-env-pass-through-in-fw">TC-02-04: Docker image <code>-v</code> flag and env pass-through in <code>fw</code></h3>
+<ul>
+<li>Where used: file 02, file 04</li>
+<li>What we could not verify: Docker image <code>-v</code> flag and env pass-through in <code>fw</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>docker run --rm redgate/flyway:13.12.2 -v</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-05-how-interactive-login-works-for-the-human-user">TC-02-05: How interactive login works for the human user</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: How interactive login works for the human user.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>snow connection test -c sbx_dev</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-02-06-learners-github-plan-for-environments">TC-02-06: Learner's GitHub plan for environments</h3>
+<ul>
+<li>Where used: file 02</li>
+<li>What we could not verify: Learner's GitHub plan for environments.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: GitHub account settings. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-03-01-lab-1-sql-syntax-scripting-select-into-v-default-seqnextval-information_schema-not-re-read">TC-03-01: Lab 1 SQL syntax (Scripting <code>SELECT ... INTO :v</code>, DEFAULT seq.NEXTVAL, INFORMATION_SCHEMA) not re-read</h3>
+<ul>
+<li>Where used: file 03</li>
+<li>What we could not verify: Lab 1 SQL syntax (Scripting <code>SELECT ... INTO :v</code>, DEFAULT seq.NEXTVAL, INFORMATION_SCHEMA) not re-read.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run it. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-03-02-reach-and-columns-of-information_schemaquery_history">TC-03-02: Reach and columns of <code>INFORMATION_SCHEMA.QUERY_HISTORY</code></h3>
+<ul>
+<li>Where used: file 03</li>
+<li>What we could not verify: Reach and columns of <code>INFORMATION_SCHEMA.QUERY_HISTORY</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.8 output and docs. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-04-01-flyway_url-overrides-environmentstarget-url-in-toml">TC-04-01: <code>FLYWAY_URL</code> overrides <code>[environments.target] url</code> in TOML</h3>
+<ul>
+<li>Where used: file 04</li>
+<li>What we could not verify: <code>FLYWAY_URL</code> overrides <code>[environments.target] url</code> in TOML.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.2; fallback <code>-url=</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-04-02-columns-and-wording-of-flyway-info-on-snowflake">TC-04-02: Columns and wording of <code>flyway info</code> on Snowflake</h3>
+<ul>
+<li>Where used: file 04</li>
+<li>What we could not verify: Columns and wording of <code>flyway info</code> on Snowflake.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.2 output. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-04-03-history-table-case-on-snowflake-flyway_schema_history-vs-quoted-lower-case">TC-04-03: History table case on Snowflake (<code>FLYWAY_SCHEMA_HISTORY</code> vs quoted lower case)</h3>
+<ul>
+<li>Where used: file 04</li>
+<li>What we could not verify: History table case on Snowflake (<code>FLYWAY_SCHEMA_HISTORY</code> vs quoted lower case).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>SHOW TABLES</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-04-04-wording-of-flyways-refusal-on-a-non-empty-schema-without-history">TC-04-04: Wording of Flyway's refusal on a non-empty schema without history</h3>
+<ul>
+<li>Where used: file 04</li>
+<li>What we could not verify: Wording of Flyway's refusal on a non-empty schema without history.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.11. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-01-column-names-of-show-entities-show-deployments">TC-05-01: column names of SHOW ENTITIES / SHOW DEPLOYMENTS</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: column names of SHOW ENTITIES / SHOW DEPLOYMENTS.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: read the result grid. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-02-what-the-alter-does-with-a-live-column-that-is-not-defined">TC-05-02: what the ALTER does with a live column that is not defined</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: what the ALTER does with a live column that is not defined.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: open <code>changes</code> in the plan JSON, Step 3.5. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-03-undrop-of-a-dcm-dropped-table-managed-again">TC-05-03: UNDROP of a DCM-dropped table: managed again?</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: UNDROP of a DCM-dropped table: managed again?.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.7 <code>SHOW ENTITIES</code> after UNDROP. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-04-shape-of-an-adoption-plan-alter-set-project-is-a-naic-poc-observation-not-public-docs">TC-05-04: shape of an adoption plan (ALTER "set PROJECT" is a NAIC POC observation, not public docs)</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: shape of an adoption plan (ALTER "set PROJECT" is a NAIC POC observation, not public docs).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.9 plan JSON. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-05-hand-made-grant-survives-a-procedure-change">TC-05-05: hand-made grant survives a procedure change</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: hand-made grant survives a procedure change.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.11 <code>SHOW GRANTS</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-06-scalar-sql-function-body-with-a-subquery-reading-its-arguments">TC-05-06: scalar SQL function body with a subquery reading its arguments</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: scalar SQL function body with a subquery reading its arguments.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.12 test SELECT. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-07-plan-privilege-and-temp-stage-error-texts-for-a-non-owner-role">TC-05-07: PLAN privilege and temp-stage error texts for a non-owner role</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: PLAN privilege and temp-stage error texts for a non-owner role.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.15. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-08-literal-error-when-adopting-an-object-owned-by-a-role-the-project-owner-lacks">TC-05-08: literal error when adopting an object owned by a role the project owner lacks</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: literal error when adopting an object owned by a role the project owner lacks.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: optional experiment in Step 3.15. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-09-error-texts-for-define-resource-monitor-define-user-and-for-define-hybrid-table">TC-05-09: error texts for DEFINE RESOURCE MONITOR / DEFINE USER and for DEFINE HYBRID TABLE</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: error texts for DEFINE RESOURCE MONITOR / DEFINE USER and for DEFINE HYBRID TABLE.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Steps 3.16 and 3.20. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-10-type-string-for-systemunmanage_entity_from_dcm_project-with-a-table">TC-05-10: type string for <code>SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT</code> with a table</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: type string for <code>SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT</code> with a table.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: run it; read error. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-05-11-form-of-show-grants-for-a-dcm-project-object">TC-05-11: form of <code>SHOW GRANTS</code> for a DCM project object</h3>
+<ul>
+<li>Where used: file 05</li>
+<li>What we could not verify: form of <code>SHOW GRANTS</code> for a DCM project object.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 3.15. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-06-01-flyway_url-flyway_locations-env-vars-override-the-toml-environment">TC-06-01: <code>FLYWAY_URL</code> / <code>FLYWAY_LOCATIONS</code> env vars override the TOML environment</h3>
+<ul>
+<li>Where used: file 06</li>
+<li>What we could not verify: <code>FLYWAY_URL</code> / <code>FLYWAY_LOCATIONS</code> env vars override the TOML environment.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 4.1 <code>flyway info</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-06-02-duplicate-key-error-text-on-a-hybrid-table">TC-06-02: duplicate-key error text on a hybrid table</h3>
+<ul>
+<li>Where used: file 06</li>
+<li>What we could not verify: duplicate-key error text on a hybrid table.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 4.5. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-06-03-how-dcm-reports-the-old-entity-after-an-out-of-band-rename">TC-06-03: how DCM reports the old entity after an out-of-band rename</h3>
+<ul>
+<li>Where used: file 06</li>
+<li>What we could not verify: how DCM reports the old entity after an out-of-band rename.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 4.9 protocol step 5. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-06-04-states-in-the-conflict-experiment-failed-v1-create-or-replace-on-a-managed-table-plan-text">TC-06-04: states in the conflict experiment (failed V1, CREATE OR REPLACE on a managed table, plan text)</h3>
+<ul>
+<li>Where used: file 06</li>
+<li>What we could not verify: states in the conflict experiment (failed V1, CREATE OR REPLACE on a managed table, plan text).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 4.11. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-01-error-numbertext-of-a-schema-clone-with-hybrid-tables-docs-391411-for-a-table-clone-naic-392105-for-a-schema-clone">TC-07-01: error number/text of a schema clone with hybrid tables (docs 391411 for a table clone, NAIC 392105 for a schema clone)</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: error number/text of a schema clone with hybrid tables (docs 391411 for a table clone, NAIC 392105 for a schema clone).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.1 (Mode H). The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-02-show-dcm-projects-in-schema-form-whether-a-schema-clone-copies-the-dcm-project">TC-07-02: <code>SHOW DCM PROJECTS ... IN SCHEMA</code> form; whether a schema clone copies the DCM project</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: <code>SHOW DCM PROJECTS ... IN SCHEMA</code> form; whether a schema clone copies the DCM project.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.2. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-03-undrop-error-text-for-a-database-with-retention-0">TC-07-03: UNDROP error text for a database with retention 0</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: UNDROP error text for a database with retention 0.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.5. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-04-developer-role-create-database-error-text">TC-07-04: developer role <code>CREATE DATABASE</code> error text</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: developer role <code>CREATE DATABASE</code> error text.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.6. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-05-snowflake-scripting-syntax-in-create_calc_dev_clone-for-rec-in-resultset-resultset-execute-immediate-q-the-argument-signature-regexp_replace-select-into-from-result_scanlast_query_id-information_schema-functionsprocedures-columns">TC-07-05: Snowflake Scripting syntax in <code>CREATE_CALC_DEV_CLONE</code>: <code>FOR rec IN &lt;RESULTSET&gt;</code>, <code>RESULTSET := (EXECUTE IMMEDIATE :q)</code>, the argument-signature <code>REGEXP_REPLACE</code>, <code>SELECT ... INTO</code> from <code>RESULT_SCAN(LAST_QUERY_ID())</code>, INFORMATION_SCHEMA FUNCTIONS/PROCEDURES columns</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: Snowflake Scripting syntax in <code>CREATE_CALC_DEV_CLONE</code>: <code>FOR rec IN &lt;RESULTSET&gt;</code>, <code>RESULTSET := (EXECUTE IMMEDIATE :q)</code>, the argument-signature <code>REGEXP_REPLACE</code>, <code>SELECT ... INTO</code> from <code>RESULT_SCAN(LAST_QUERY_ID())</code>, INFORMATION_SCHEMA FUNCTIONS/PROCEDURES columns.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.7 deploy and Step 5.9 call; read <code>sqlerrm</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-06-composition-of-the-first-clone-plan-adoption-entries-env_config-grants">TC-07-06: composition of the first clone plan (adoption entries, ENV_CONFIG, GRANTs)</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: composition of the first clone plan (adoption entries, ENV_CONFIG, GRANTs).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.10. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-07-snow-sql-d-namevalue-with-name-templating">TC-07-07: <code>snow sql -D name=value</code> with <code>&lt;% name %&gt;</code> templating</h3>
+<ul>
+<li>Where used: file 07, file 08</li>
+<li>What we could not verify: <code>snow sql -D name=value</code> with <code>&lt;% name %&gt;</code> templating.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Step 5.12. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-07-08-error-text-when-redirects-are-forgotten-and-the-developer-role-writes-to-int">TC-07-08: error text when redirects are forgotten and the developer role writes to INT</h3>
+<ul>
+<li>Where used: file 07</li>
+<li>What we could not verify: error text when redirects are forgotten and the developer role writes to INT.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Break it. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-01-which-role-runs-snow-dcm-for-the-clone-target-in-ci-sbx_cicd_pipeline-vs-sbx_calc_dev-alternative-needs-grant-role-sbx_calc_dev-to-user-sbx_svc_cicd">TC-08-01: Which role runs <code>snow dcm</code> for the CLONE target in CI (<code>SBX_CICD_PIPELINE</code> vs <code>SBX_CALC_DEV</code>); alternative needs <code>GRANT ROLE SBX_CALC_DEV TO USER SBX_SVC_CICD</code></h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: Which role runs <code>snow dcm</code> for the CLONE target in CI (<code>SBX_CICD_PIPELINE</code> vs <code>SBX_CALC_DEV</code>); alternative needs <code>GRANT ROLE SBX_CALC_DEV TO USER SBX_SVC_CICD</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: First PR run; read any ownership error. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-02-container-user-can-read-a-mode-600-mounted-key-file-flyway-home-directory">TC-08-02: Container user can read a mode-600 mounted key file; Flyway home directory</h3>
+<ul>
+<li>Where used: file 08, file 12</li>
+<li>What we could not verify: Container user can read a mode-600 mounted key file; Flyway home directory.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run <code>flyway_ci.sh</code>; try <code>--user "$(id -u):$(id -g)"</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-03-learners-github-plan-shows-reviewers-on-environments-pull_request-merge-checkout-fork-prs-get-no-secrets-dockerjqpython3-on-ubuntu-2404-always-on-cancel">TC-08-03: Learner's GitHub plan shows reviewers on environments; <code>pull_request</code> merge checkout; fork PRs get no secrets; docker/jq/python3 on <code>ubuntu-24.04</code>; <code>always()</code> on cancel</h3>
+<ul>
+<li>Where used: file 08, file 12</li>
+<li>What we could not verify: Learner's GitHub plan shows reviewers on environments; <code>pull_request</code> merge checkout; fork PRs get no secrets; docker/jq/python3 on <code>ubuntu-24.04</code>; <code>always()</code> on cancel.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Settings page; GitHub docs. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-04-migrations-replay-on-a-fresh-environment-v3-constant-expected_rows-and-v4-rename-without-if-exists-fail-on-a-new-qa">TC-08-04: Migrations replay on a fresh environment: <code>V3</code> constant <code>EXPECTED_ROWS</code> and <code>V4</code> rename without <code>IF EXISTS</code> fail on a new QA</h3>
+<ul>
+<li>Where used: file 08, file 11</li>
+<li>What we could not verify: Migrations replay on a fresh environment: <code>V3</code> constant <code>EXPECTED_ROWS</code> and <code>V4</code> rename without <code>IF EXISTS</code> fail on a new QA.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run <code>promote-qa-prod</code> to <code>qa</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-05-snow-sql-format-json-output-shape-list-of-rows-upper-case-keys-information_schemadatabases-and-tables-columns">TC-08-05: <code>snow sql --format json</code> output shape (list of rows, upper-case keys); <code>INFORMATION_SCHEMA.DATABASES</code> and <code>.TABLES</code> columns</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: <code>snow sql --format json</code> output shape (list of rows, upper-case keys); <code>INFORMATION_SCHEMA.DATABASES</code> and <code>.TABLES</code> columns.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the commands by hand. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-06-flyway-targetversion">TC-08-06: Flyway <code>-target=&lt;version&gt;</code></h3>
+<ul>
+<li>Where used: file 08, file 11, file 12</li>
+<li>What we could not verify: Flyway <code>-target=&lt;version&gt;</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Flyway docs or <code>-?</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-07-snow-sql-f-d-namevalue-with-and-blocks-inside-ci-same-as-tc-07-07">TC-08-07: <code>snow sql -f ... -D name=value</code> with <code>&lt;% %&gt;</code> and <code>$$</code> blocks inside CI (same as TC-07-07)</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: <code>snow sql -f ... -D name=value</code> with <code>&lt;% %&gt;</code> and <code>$$</code> blocks inside CI (same as TC-07-07).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Re-run Lab 5 step 5.12 first. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-08-column-names-of-the-flyway-history-table-on-snowflake-lower-case-quoted-names">TC-08-08: Column names of the Flyway history table on Snowflake (lower-case quoted names)</h3>
+<ul>
+<li>Where used: file 08, file 09, file 10</li>
+<li>What we could not verify: Column names of the Flyway history table on Snowflake (lower-case quoted names).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>SELECT * FROM &lt;history table&gt;</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-09-flyway-image-digest-sha256ccc7fe0-seen-2026-11-16">TC-08-09: Flyway image digest <code>sha256:ccc7fe0...</code> (seen 2026-11-16)</h3>
+<ul>
+<li>Where used: file 08</li>
+<li>What we could not verify: Flyway image digest <code>sha256:ccc7fe0...</code> (seen 2026-11-16).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Docker Hub tag page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-08-10-flyway-ignoremigrationpatternspending-for-validate">TC-08-10: Flyway <code>ignoreMigrationPatterns='*:pending'</code> for <code>validate</code></h3>
+<ul>
+<li>Where used: file 08, file 12</li>
+<li>What we could not verify: Flyway <code>ignoreMigrationPatterns='*:pending'</code> for <code>validate</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run with and without on a pending file. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-01-duplicate-key-error-text-on-a-hybrid-table">TC-09-01: Duplicate key error text on a hybrid table</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: Duplicate key error text on a hybrid table.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run step 5.3. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-02-alter-session-set-lock_timeout-and-default-wait">TC-09-02: <code>ALTER SESSION SET LOCK_TIMEOUT</code> and default wait</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: <code>ALTER SESSION SET LOCK_TIMEOUT</code> and default wait.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Snowflake parameter page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-03-mode-s-update-on-a-different-row-waits-table-level-wait">TC-09-03: Mode S: update on a different row waits (table-level wait)</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: Mode S: update on a different row waits (table-level wait).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the two-session test. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-04-create-index-name-on-table-cols-grammar-for-hybrid-tables">TC-09-04: <code>CREATE INDEX &lt;name&gt; ON &lt;table&gt; (&lt;cols&gt;)</code> grammar for hybrid tables</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: <code>CREATE INDEX &lt;name&gt; ON &lt;table&gt; (&lt;cols&gt;)</code> grammar for hybrid tables.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: CREATE INDEX reference page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-05-a-grant-cannot-be-limited-to-a-column-or-a-row">TC-09-05: A grant cannot be limited to a column or a row</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: A grant cannot be limited to a column or a row.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: GRANT reference page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-09-06-a-plan-reports-a-hand-revoked-declared-grant">TC-09-06: A plan reports a hand-revoked declared grant</h3>
+<ul>
+<li>Where used: file 09</li>
+<li>What we could not verify: A plan reports a hand-revoked declared grant.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the break-it commands. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-01-systemunmanage_entity_from_dcm_project-arguments">TC-10-01: <code>SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT</code> arguments</h3>
+<ul>
+<li>Where used: file 10, file 12</li>
+<li>What we could not verify: <code>SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT</code> arguments.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: DCM manage page. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-02-which-jwt-code-a-wrong-key-returns-failure-detail-availability">TC-10-02: Which JWT code a wrong key returns; failure-detail availability</h3>
+<ul>
+<li>Where used: file 10, file 12</li>
+<li>What we could not verify: Which JWT code a wrong key returns; failure-detail availability.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>SYSTEM$GET_LOGIN_FAILURE_DETAILS</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-03-plan-result-when-only-the-definition-is-deleted-and-the-grant-stays">TC-10-03: Plan result when only the definition is deleted and the <code>GRANT</code> stays</h3>
+<ul>
+<li>Where used: file 10</li>
+<li>What we could not verify: Plan result when only the definition is deleted and the <code>GRANT</code> stays.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Try it in the clone. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-04-plan-treatment-of-an-extra-column-not-in-the-definition-dropped">TC-10-04: Plan treatment of an extra column not in the definition (dropped?)</h3>
+<ul>
+<li>Where used: file 10</li>
+<li>What we could not verify: Plan treatment of an extra column not in the definition (dropped?).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Read <code>changes[]</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-05-exact-error-when-the-sbx_dev_set_on_cli-placeholder-is-used-outcome-of-the-plan-with-the-wrong-default-target">TC-10-05: Exact error when the <code>SBX_DEV_SET_ON_CLI</code> placeholder is used; outcome of the plan with the wrong default target</h3>
+<ul>
+<li>Where used: file 10, file 12</li>
+<li>What we could not verify: Exact error when the <code>SBX_DEV_SET_ON_CLI</code> placeholder is used; outcome of the plan with the wrong default target.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the two variants. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-06-boolean-runtime-variable-form-d-clone_redirectsfalse">TC-10-06: Boolean runtime variable form (<code>-D "clone_redirects=false"</code>)</h3>
+<ul>
+<li>Where used: file 10</li>
+<li>What we could not verify: Boolean runtime variable form (<code>-D "clone_redirects=false"</code>).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Plan output. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-07-fractional-credit_quota-systemwait-monitor-latency">TC-10-07: Fractional <code>CREDIT_QUOTA</code>, <code>SYSTEM$WAIT</code>, monitor latency</h3>
+<ul>
+<li>Where used: file 10, file 12</li>
+<li>What we could not verify: Fractional <code>CREDIT_QUOTA</code>, <code>SYSTEM$WAIT</code>, monitor latency.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>SHOW RESOURCE MONITORS</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-10-08-sbx_cicd_pipeline-owns-fin_calculation_result_base-and-can-grant-on-it">TC-10-08: <code>SBX_CICD_PIPELINE</code> owns <code>FIN_CALCULATION_RESULT_BASE</code> and can grant on it</h3>
+<ul>
+<li>Where used: file 10</li>
+<li>What we could not verify: <code>SBX_CICD_PIPELINE</code> owns <code>FIN_CALCULATION_RESULT_BASE</code> and can grant on it.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: <code>SHOW GRANTS ON TABLE ...</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-11-01-hybrid-create-with-not-null-autoincrement-plus-out-of-line-primary-key">TC-11-01: Hybrid <code>CREATE</code> with <code>NOT NULL AUTOINCREMENT</code> plus out-of-line <code>PRIMARY KEY</code></h3>
+<ul>
+<li>Where used: file 11</li>
+<li>What we could not verify: Hybrid <code>CREATE</code> with <code>NOT NULL AUTOINCREMENT</code> plus out-of-line <code>PRIMARY KEY</code>.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run the seed in <code>CAP_HAND</code>. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-11-02-plan-content-after-a-hand-run-rename-old-entity-gone-new-table-adopted">TC-11-02: Plan content after a hand-run rename (old entity gone, new table adopted)</h3>
+<ul>
+<li>Where used: file 11</li>
+<li>What we could not verify: Plan content after a hand-run rename (old entity gone, new table adopted).</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Read the plan. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h3 id="tc-11-03-alter-table-if-exists-rename-to-is-a-no-op-for-a-missing-table">TC-11-03: <code>ALTER TABLE IF EXISTS ... RENAME TO</code> is a no-op for a missing table</h3>
+<ul>
+<li>Where used: file 11</li>
+<li>What we could not verify: <code>ALTER TABLE IF EXISTS ... RENAME TO</code> is a no-op for a missing table.</li>
+<li>Why it matters: The step that uses it shows an expected output taken from docs or from the author's reading, not from a run.</li>
+<li>How to verify at lab time: Run it on a missing name. The callout in the lab file names the exact step.</li>
+<li>Expected if the docs are right: the output shown after the step, or the behaviour described in the callout.</li>
+<li>Fallback if it differs: use the fallback named in the callout; if none, record the real output here and ask the assistant to adapt the step.</li>
+<li>Result at lab time (learner fills): date | outcome | notes</li>
+</ul>
+<h2 id="further-unverified-items-without-their-own-id">Further unverified items without their own id</h2>
+<p>These come from the author lists and the docs research. Each is flagged in the text with the words "note it" or "TO-CONFIRM" but has no separate id.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Where</th>
+<th>How to verify at lab time</th>
+<th>Result at lab time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Exact wording of Flyway errors for <code>validate</code> with ignored or missing migrations, for a repeated <code>migrate</code> after a failure, and for the <code>undo</code> refusal in Community edition</td>
+<td>04</td>
+<td>Run the step and paste the message</td>
+<td></td>
+</tr>
+<tr>
+<td>Snowsight "Run all" behaviour with <code>$$</code> blocks (the pack uses <code>snow sql -f</code> for files)</td>
+<td>02, 03</td>
+<td>Run one multi-statement worksheet with a procedure body</td>
+<td></td>
+</tr>
+<tr>
+<td><code>--variable</code> quoting forms for <code>snow dcm</code> (inner single quotes for strings)</td>
+<td>05, 07, 10</td>
+<td>Try both forms from the CLI reference; see also TC-10-06</td>
+<td></td>
+</tr>
+<tr>
+<td>Flyway <code>executeInTransaction</code> and mixed transactions on Snowflake</td>
+<td>04</td>
+<td>Flyway docs page "executeInTransaction"</td>
+<td></td>
+</tr>
+<tr>
+<td>Whether <code>snowflakedb/snowflake-cli-action</code> is deprecated in favour of <code>snowflake-actions</code></td>
+<td>08</td>
+<td>Read the repository README</td>
+<td></td>
+</tr>
+<tr>
+<td>Snowsight account identifier location (TC-02-01) and other file 02 setup items</td>
+<td>02</td>
+<td>See the TC-02-xx blocks above</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="part-b-verified-log">Part B. VERIFIED log</h2>
+<p>Source: the author's docs research notes. "Date read" is 2026-11-16 for every row. Rows with partial reads say so.</p>
+<table>
+<thead>
+<tr>
+<th>Doc URL</th>
+<th>What was verified</th>
+<th>Date read</th>
+<th>Used in file(s)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview</td>
+<td>all editions, cost, limits, key terms, migration tooling</td>
+<td>2026-11-16</td>
+<td>01, 02, 05</td>
+</tr>
+<tr>
+<td>.../dcm-projects-use</td>
+<td>CLI &gt;= 3.24.0, privileges, PLAN/DEPLOY semantics, one config at a time</td>
+<td>2026-11-16</td>
+<td>02, 05, 08</td>
+</tr>
+<tr>
+<td>.../dcm-projects-files</td>
+<td>manifest v2 schema, folder layout, DEFINE rules, Jinja limits</td>
+<td>2026-11-16</td>
+<td>05</td>
+</tr>
+<tr>
+<td>.../dcm-projects-supported-entities</td>
+<td>entity list (no hybrid), table limits, OWNERSHIP grants</td>
+<td>2026-11-16</td>
+<td>05, 06, 12</td>
+</tr>
+<tr>
+<td>.../dcm-projects-cicd</td>
+<td>CI/CD flow, parallel developer pattern, GitHub actions, DROP detection</td>
+<td>2026-11-16</td>
+<td>05, 08</td>
+</tr>
+<tr>
+<td>.../dcm-projects-manage</td>
+<td>SHOW ENTITIES, unmanage functions, PURGE, DROP project</td>
+<td>2026-11-16</td>
+<td>05, 10</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/sql-reference/sql/execute-dcm-project</td>
+<td>SQL grammar, plan JSON</td>
+<td>2026-11-16</td>
+<td>05, 12</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/{overview,plan,deploy,create,list,describe,test}</td>
+<td>flags</td>
+<td>2026-11-16</td>
+<td>05, 08, 12</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/user-guide/tables-hybrid, -limitations, -clone</td>
+<td>availability, limits, clone, IGNORE HYBRID TABLES</td>
+<td>2026-11-16</td>
+<td>02, 06, 07, 09</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/sql-reference/sql/create-hybrid-table</td>
+<td>DDL syntax</td>
+<td>2026-11-16</td>
+<td>06, 09</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/release-notes/bcr-bundles/2026_02/bcr-2157</td>
+<td>CREATE HYBRID TABLE privilege</td>
+<td>2026-11-16</td>
+<td>02</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/user-guide/admin-trial-account</td>
+<td>trial duration, limits</td>
+<td>2026-11-16</td>
+<td>02</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/sql-reference/sql/create-resource-monitor, /user-guide/resource-monitors</td>
+<td>syntax and pattern</td>
+<td>2026-11-16</td>
+<td>02, 10</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/user-guide/key-pair-auth, -troubleshooting</td>
+<td>openssl, ADD KEY PAIR, RSA_PUBLIC_KEY, JWT errors</td>
+<td>2026-11-16</td>
+<td>02, 10, 12</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/user-guide/admin-user-management, security-mfa-rollout</td>
+<td>TYPE=SERVICE, phases, trial exemption</td>
+<td>2026-11-16</td>
+<td>02</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/user-guide/workload-identity-federation</td>
+<td>WIF concepts, drivers (partial read; GitHub specifics from CLI action page)</td>
+<td>2026-11-16</td>
+<td>08</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action; github.com/marketplace/actions/snowflake-actions</td>
+<td>OIDC user DDL, inputs, key-pair env vars, pinning</td>
+<td>2026-11-16</td>
+<td>08</td>
+</tr>
+<tr>
+<td>docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-connections</td>
+<td>env vars, JWT connection, -x</td>
+<td>2026-11-16</td>
+<td>02, 12</td>
+</tr>
+<tr>
+<td>documentation.red-gate.com (Snowflake driver, feature summary, commands, clean, baseline, repair, out-of-order, clean-disabled, schema-history, undo, docker, supported DBs, release notes)</td>
+<td>see section 7</td>
+<td>2026-11-16</td>
+<td>02, 04, 06, 08, 12</td>
+</tr>
+<tr>
+<td>red-gate.com/hub/product-learning/flyway/using-toml-configuration-files-with-flyway</td>
+<td>TOML vs CONF</td>
+<td>2026-11-16</td>
+<td>02, 04, 06, 08, 12</td>
+</tr>
+<tr>
+<td>docs.github.com (manage-environments, concurrency)</td>
+<td>environments, reviewers, plan limits, concurrency</td>
+<td>2026-11-16</td>
+<td>08</td>
+</tr>
+<tr>
+<td>hub.docker.com API (redgate/flyway, flyway/flyway tag 13.12.2); pypi.org/pypi/snowflake-cli</td>
+<td>tags exist; CLI 3.33.0</td>
+<td>2026-11-16</td>
+<td>02, 08</td>
+</tr>
+</tbody>
+</table>
+<p>Facts verified from the research notes and used across files (all read 2026-11-16):</p>
+<ul>
+<li>DCM Projects are available in all editions; the Snowflake CLI needs 3.24.0 or newer for <code>snow dcm</code>.</li>
+<li>Hybrid tables are not supported in trial accounts (two pages), are generally available on AWS and Azure commercial regions, and are not in the DCM supported list.</li>
+<li>Flyway Community has no undo, no dry run and no drift report; <code>cleanDisabled</code> defaults to true.</li>
+<li>Key-pair authentication, <code>TYPE = SERVICE</code> users and the password phase-out exemption for trial accounts.</li>
+<li>GitHub environments with required reviewers, and <code>concurrency</code> groups.</li>
+</ul>
+<h2 id="next">Next</h2>
+<p>Back to <a href="index.md">index</a>.</p>
+</body></html>

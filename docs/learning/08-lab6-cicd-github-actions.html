@@ -1,0 +1,1036 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 6: CI/CD with GitHub Actions (file 08)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-6-cicd-with-github-actions-file-08">Lab 6: CI/CD with GitHub Actions (file 08)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 6 | <strong>File no:</strong> 08 | <strong>Time:</strong> 3 h (plus 1 h for the optional OIDC stretch) | <strong>Prerequisites:</strong> file 07 done; GitHub secrets and variables set (file 02); GitHub environments created (step 5.1) | <strong>Modes supported:</strong> H or S, D (steps that need DCM skip themselves when the repository variable <code>DCM_MODE</code> is <code>off</code>) | <strong>Leaves behind:</strong> six workflow files committed by you, one green pull request run, <code>int</code> deployed through an approval, <code>SBX_QA</code> and <code>SBX_PROD</code> filled by the promote workflow, no <code>SBX_DEV_PR*</code> database left.</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>Turn the manual flow you ran by hand in Labs 3 to 5 into automatic, repeatable pipelines, using GitHub Actions as the sandbox stand-in for NAIC's GitLab CI.</p>
+<p>By the end you can:</p>
+<ul>
+<li>explain every GitLab CI concept NAIC plans to use and name its GitHub Actions counterpart;</li>
+<li>run a pull request pipeline that creates a private clone for the PR, applies Flyway and DCM to it, fails on an unexpected DROP, proves an empty re-plan, runs a smoke test, proves the source was not written to, and always cleans up;</li>
+<li>deploy to <code>int</code> after a human approval, then promote to <code>qa</code> and <code>prod</code>;</li>
+<li>authenticate with a key-pair secret, and (stretch) with GitHub OIDC and no stored key;</li>
+<li>list the supply-chain rules NAIC cares about and show where each one lives in the workflow files.</li>
+</ul>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world (NAIC).</strong> Today nobody deploys the calc engine with a pipeline. The old way was pasting <code>sql/procedures.sql</code> into Snowsight, in INT only. There is no root <code>.gitlab-ci.yml</code> yet, and the Flyway module repository has no implementation (research-context section 12). The target design in <code>calc-engine-pipeline.html</code> and <code>calc-engine-complete-architecture.html</code> (sections 8 and 9) is one pinned GitLab profile that includes, in order: source checks, security, deployment, a new Snowflake DCM module, a Snowflake Flyway module, a Jira change-request fragment, and the core module last.</p>
+<p>The planned job flow is: static checks, a ready merged-result merge request, a guarded review clone <code>CALC_DEV_&lt;ticket&gt;</code> (or <code>CALC_DEV_MR&lt;iid&gt;</code>), Flyway info and validate, a full DCM plan with an exact DROP policy, prerequisite migrations, DCM deploy, data changes, an empty re-plan, smoke tests, cleanup with <code>when: always</code>, then protected manual INT, QA and PROD jobs. Review, INT, QA and PROD use separate identities and separate <code>resource_group</code> values. The target identity is a GitLab OIDC token federated into Snowflake.</p>
+<p>This lab builds that same shape on GitHub, with <code>SBX_</code> names. Everything here is a miniature. You are not changing NAIC, and the "never run calculations" rule from file 00 is about NAIC only. In the sandbox the compute procedure is <code>SP_COMPUTE_MINI_RESULT</code> and it is harmless.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Terminal</strong> (in the clone <code>snowflake-calc-sandbox</code>).</p>
+<pre><code class="language-bash">snow --version                              # expect 3.24.0 or higher; the pack pins 3.33.0
+snow connection test -c sbx_cicd            # expect: connection OK for SBX_SVC_CICD
+docker run --rm redgate/flyway:13.12.2 -v   # expect: a Flyway 13.12.2 version banner
+ls scripts/refresh_dev_clone.sh sql/clone_support/calc_dev_clone_procs.sql
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>, warehouse <code>SBX_CALC_WH</code>).</p>
+<pre><code class="language-sql">SHOW PROCEDURES LIKE 'CREATE_CALC_DEV_CLONE' IN SCHEMA SBX_INT.CALC_DEV_SUPPORT;   -- expect 1 row
+SHOW PROCEDURES LIKE 'DROP_CALC_DEV_CLONE'   IN SCHEMA SBX_INT.CALC_DEV_SUPPORT;   -- expect 1 row
+SHOW DATABASES LIKE 'SBX_DEV_%';                                                    -- expect 0 rows
+SHOW DCM PROJECTS IN SCHEMA SBX_INT.CALC_SUPPORT;                                   -- expect CALC_ENGINE_DCM (skip if mode D-off)
+</code></pre>
+<p>Run in: <strong>GitHub UI</strong> (repository, Settings, Secrets and variables, Actions). You should see the four secrets <code>SNOWFLAKE_ACCOUNT</code>, <code>SNOWFLAKE_USER</code>, <code>SNOWFLAKE_PRIVATE_KEY_RAW</code>, <code>SNOWFLAKE_PRIVATE_KEY_PASSPHRASE</code>, and the variables <code>SNOWFLAKE_ROLE</code>, <code>SNOWFLAKE_WAREHOUSE</code>, <code>HYBRID_MODE</code>, <code>SNOW_CLI_VERSION</code>, <code>FLYWAY_VERSION</code>. Also add <code>DCM_MODE</code> (<code>on</code> or <code>off</code>) from your probe result in file 02. If something is missing, go back to file 02 section "GitHub repository" before continuing.</p>
+<p>If a clone from Lab 5 still exists, drop it now: <code>CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('LAB5A');</code>.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>CI/CD.</strong> Continuous integration means every change is built and tested automatically when it is proposed. Continuous delivery means a tested change can be deployed by a repeatable pipeline, with a human approval where you want one. A <strong>pipeline</strong> is the automated sequence. In GitHub it is called a <strong>workflow run</strong>.</p>
+<p><strong>Workflow, job, step, runner.</strong> A workflow is one YAML file in <code>.github/workflows/</code>. It contains jobs. Jobs run on a <strong>runner</strong>, which is a machine GitHub (or you) provide. A job contains steps, which are shell commands or reusable actions. Jobs run in parallel unless one declares <code>needs: &lt;other job&gt;</code>.</p>
+<p><strong>Trigger.</strong> The <code>on:</code> block says when a workflow starts: <code>pull_request</code>, <code>push</code>, <code>workflow_dispatch</code> (a manual button), <code>schedule</code> (cron).</p>
+<p><strong>Environment.</strong> A named deployment target in GitHub (<code>int</code>, <code>qa</code>, <code>prod</code>). A job that names <code>environment: int</code> waits until the environment's protection rules pass, for example a <strong>required reviewer</strong>, and only then can it read that environment's secrets.</p>
+<p><strong>Concurrency group.</strong> <code>concurrency: group: deploy-int</code> lets at most one job in that group run at once. It is the counterpart of the GitLab <code>resource_group</code> that NAIC uses to keep two deploys from racing.</p>
+<p><strong>OIDC (OpenID Connect) token.</strong> A short-lived signed token that the runner can ask GitHub for. Snowflake can be told to trust it, so no stored key is needed. This is "workload identity federation".</p>
+<p><strong>Supply chain.</strong> Everything your pipeline downloads and runs: actions, container images, CLI packages. Pinning means naming an exact immutable version so that nobody can change what runs under you.</p>
+<h3 id="41-gitlab-ci-to-github-actions">4.1 GitLab CI to GitHub Actions</h3>
+<table>
+<thead>
+<tr>
+<th>NAIC GitLab CI idea</th>
+<th>GitHub Actions counterpart in the sandbox</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pipeline</td>
+<td>Workflow run</td>
+<td>One run per trigger.</td>
+</tr>
+<tr>
+<td>Stage</td>
+<td><code>needs:</code> between jobs</td>
+<td>GitHub has no <code>stages:</code> keyword. Order is expressed by <code>needs</code>.</td>
+</tr>
+<tr>
+<td>Job</td>
+<td>Job</td>
+<td>Same word.</td>
+</tr>
+<tr>
+<td>Runner</td>
+<td>Runner (<code>runs-on:</code>)</td>
+<td>NAIC uses its own runners and a controlled image. The sandbox uses GitHub-hosted <code>ubuntu-24.04</code>.</td>
+</tr>
+<tr>
+<td><code>include</code>, component, profile <code>snowflake-calc-engine</code></td>
+<td>Reusable workflow (<code>workflow_call</code>) or composite action</td>
+<td>The sandbox keeps steps inline so each file stands alone. In a real repo you would move repeated steps into a composite action.</td>
+</tr>
+<tr>
+<td>Protected environment with manual approval</td>
+<td>Environment with required reviewers</td>
+<td>Only on public repos for Free plans (see step 5.1).</td>
+</tr>
+<tr>
+<td><code>when: manual</code> job</td>
+<td>Environment approval, or <code>workflow_dispatch</code></td>
+<td><code>promote-qa-prod.yml</code> uses both.</td>
+</tr>
+<tr>
+<td><code>resource_group</code></td>
+<td><code>concurrency: group:</code></td>
+<td>Use <code>cancel-in-progress: false</code> for deploys so a running deploy is never killed.</td>
+</tr>
+<tr>
+<td><code>id_tokens:</code> (OIDC)</td>
+<td><code>permissions: id-token: write</code></td>
+<td>Only the OIDC job asks for it.</td>
+</tr>
+<tr>
+<td>CI/CD variables (masked, protected)</td>
+<td>Secrets and variables, optionally per environment</td>
+<td>A secret is hidden in logs. A variable is plain text.</td>
+</tr>
+<tr>
+<td>Merge request pipeline, merged results</td>
+<td><code>pull_request</code> event</td>
+<td>GitHub tests a merge of your branch into the base by default (see TC-08-03).</td>
+</tr>
+<tr>
+<td><code>rules:</code></td>
+<td><code>on:</code> plus <code>if:</code></td>
+<td><code>if:</code> works on jobs and on single steps.</td>
+</tr>
+<tr>
+<td><code>when: always</code> cleanup</td>
+<td><code>if: always()</code> on a step or job</td>
+<td>Runs also when earlier steps failed.</td>
+</tr>
+<tr>
+<td>Scheduled pipeline</td>
+<td><code>schedule:</code> cron</td>
+<td>Used by the clone sweeper.</td>
+</tr>
+<tr>
+<td>Artifacts and 30-day evidence</td>
+<td><code>$GITHUB_STEP_SUMMARY</code> and artifacts</td>
+<td>The sandbox writes plan summaries to the step summary.</td>
+</tr>
+<tr>
+<td>Internal Nexus mirror for tools</td>
+<td>Tools from your own mirror or pinned public sources</td>
+<td>See section 5.14. In NAIC, Snowflake CLI comes from the PyPI proxy, there is no CLI image, and Flyway must be an internally mirrored immutable image.</td>
+</tr>
+<tr>
+<td>Vault plus JWT auth to read secrets</td>
+<td>GitHub encrypted secrets, or OIDC straight to Snowflake</td>
+<td>NAIC's target removes stored Snowflake secrets.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-the-pipeline-you-will-build">4.2 The pipeline you will build</h3>
+<pre><code> pull request opened or updated
+        |
+        v
+ validate.yml        lint + flyway validate (reads INT only)
+ pr-clone-check.yml  record INT counts
+                     drop old PR clone, CREATE_CALC_DEV_CLONE('PR&lt;n&gt;')
+                     [pre-DCM migrations if flyway/PRE_DCM_TARGET is set]
+                     dcm plan (full) -&gt; check_plan_for_drops.py  &lt;-- fails here on any DROP
+                     dcm deploy to the clone
+                     flyway migrate on the clone
+                     dcm plan again -&gt; assert_plan_empty.py
+                     smoke_clone.sql, then assert_zero_int_writes.sql
+                     cleanup job (always): DROP_CALC_DEV_CLONE('PR&lt;n&gt;')
+        |
+ merge to main
+        v
+ deploy-int.yml      environment int (you approve) -&gt; same steps against SBX_INT
+        |
+ manual button
+        v
+ promote-qa-prod.yml environment qa or prod (you approve) -&gt; SBX_QA / SBX_PROD
+ sweep-stale-clones.yml  daily: drop PR clones older than one day
+</code></pre>
+<h3 id="43-ordering-rules-the-workflows-follow">4.3 Ordering rules the workflows follow</h3>
+<p>The pack's two ordering rules (file 06) are both implemented:</p>
+<ol>
+<li>Normal change: DCM full plan, review, DCM deploy, Flyway migrate, DCM full re-plan must be empty. This is the default order in every workflow.</li>
+<li>Rename change: Flyway rename first, then the DCM definition update, then an empty re-plan. The workflows support this through one small file, <code>flyway/PRE_DCM_TARGET</code>. If it contains a version number such as <code>6</code>, the workflow runs <code>flyway migrate -target=6</code> before the DCM plan. This mirrors the "apply prerequisite migrations" step of NAIC's planned job flow. If the file is empty, the step does nothing.</li>
+</ol>
+<blockquote>
+<p><strong>NEW NAME (sandbox convention).</strong> <code>flyway/PRE_DCM_TARGET</code>, <code>scripts/pre_dcm_migrations.sh</code>, <code>scripts/flyway_ci.sh</code> and <code>scripts/assert_plan_empty.py</code> are not in the contract tree. They are small helpers of this lab.</p>
+</blockquote>
+<h3 id="44-what-a-green-pipeline-proves-and-what-it-does-not">4.4 What a green pipeline proves, and what it does not</h3>
+<p>It proves that this commit, applied to a copy of INT, plans without drops, migrates, re-plans empty and passes the smoke test. It does not prove that INT itself is unchanged since the plan (DEPLOY recomputes its own plan), and it does not roll anything back. Lab 8 shows both gaps.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DEPLOY computes a fresh changeset and does not replay a saved PLAN (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16).</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-51-create-the-github-environments">Step 5.1 Create the GitHub environments</h3>
+<p>Run in: <strong>GitHub UI</strong> (repository, Settings, Environments).</p>
+<ol>
+<li>Create four environments: <code>int</code>, <code>qa</code>, <code>prod</code>, <code>pr-clone</code>.</li>
+<li>On <code>int</code>, <code>qa</code> and <code>prod</code>, tick <strong>Required reviewers</strong> and add yourself. <strong>Untick "Prevent self-review"</strong>. You are the only person in the sandbox, so with self-review blocked nothing could ever be approved.</li>
+<li>Leave <code>pr-clone</code> without any protection rule. The pull request job must start without a human click, and it reads secrets only through the repository level.</li>
+<li>Optional on <code>prod</code>: set a wait timer of one minute to feel what a cooling-off period is like.</li>
+</ol>
+<p>You should see: four environments, three of them with "Required reviewers: 1".</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> A job that names an environment must pass that environment's protection rules before it runs or can read its secrets. Up to 6 reviewers, only one has to approve, and "Prevent self-review" is optional. A workflow that names a non-existent environment creates it with no protection (https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> Environments with required reviewers are available for public repositories on current plans. For private repositories you need GitHub Pro, Team or Enterprise (same page, read 2026-11-16). This is why the contract makes <code>snowflake-calc-sandbox</code> PUBLIC. Nothing secret is ever committed.</p>
+<p><strong>TO-CONFIRM [TC-08-03]:</strong> Your own plan and behaviour: whether the environments page shows the reviewer option for your repository. How to check at lab time: open Settings, Environments, <code>int</code>. If the reviewer option is missing, use the fallback in section 8. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-52-create-the-helper-scripts">Step 5.2 Create the helper scripts</h3>
+<p>Run in: <strong>Terminal</strong> (repository root). Create each file with your editor, then make the shell scripts executable with <code>chmod +x scripts/flyway_ci.sh scripts/pre_dcm_migrations.sh</code>.</p>
+<p><strong><code>scripts/check_plan_for_drops.py</code></strong>. Exits 1 if the saved plan has any top-level DROP. It fails closed: if the file does not look like a plan, it also fails.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;Fail if a saved DCM plan contains any DROP. Usage: check_plan_for_drops.py &lt;plan_json&gt;&quot;&quot;&quot;
+import json
+import sys
+
+
+def main(path):
+    with open(path, encoding=&quot;utf-8&quot;) as handle:
+        plan = json.load(handle)
+    if &quot;changeset&quot; not in plan:
+        print(&quot;ERROR: no 'changeset' key; not a plan file, failing closed&quot;)
+        return 2
+    changes = plan[&quot;changeset&quot;]
+    drops = [c for c in changes if str(c.get(&quot;type&quot;, &quot;&quot;)).upper() == &quot;DROP&quot;]
+    print(f&quot;plan changes: {len(changes)}  drops: {len(drops)}&quot;)
+    for c in drops:
+        oid = c.get(&quot;object_id&quot;, {})
+        print(f&quot;  DROP {oid.get('domain')} {oid.get('fqn')}&quot;)
+    return 1 if drops else 0
+
+
+if __name__ == &quot;__main__&quot;:
+    if len(sys.argv) != 2:
+        print(&quot;usage: check_plan_for_drops.py &lt;plan_json&gt;&quot;)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1]))
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> A saved plan has <code>version: 2</code>, <code>metadata</code>, and a <code>changeset</code> array. Each entry has <code>type</code> (CREATE, ALTER or DROP) and <code>object_id</code> with <code>domain</code>, <code>name</code> and <code>fqn</code>. An empty <code>changeset</code> means the project is in sync (https://docs.snowflake.com/en/sql-reference/sql/execute-dcm-project, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G04]:</strong> The file name that <code>--save-output</code> writes (<code>plan_result.json</code> or <code>plan.json</code>). The workflows below use a glob that accepts either. How to check at lab time: <code>snow dcm plan ... --save-output</code> then <code>ls dcm/calc_engine/out/</code>. Record the result in file 13.</p>
+</blockquote>
+<p><strong><code>scripts/assert_plan_empty.py</code></strong>. Exits 1 if the plan has any change at all. This is the "empty re-plan" check.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;Fail unless a saved DCM plan has an empty changeset. Usage: assert_plan_empty.py &lt;plan_json&gt;&quot;&quot;&quot;
+import json
+import sys
+
+if len(sys.argv) != 2:
+    print(&quot;usage: assert_plan_empty.py &lt;plan_json&gt;&quot;)
+    sys.exit(2)
+with open(sys.argv[1], encoding=&quot;utf-8&quot;) as handle:
+    plan = json.load(handle)
+if &quot;changeset&quot; not in plan:
+    print(&quot;ERROR: no 'changeset' key; failing closed&quot;)
+    sys.exit(2)
+changes = plan[&quot;changeset&quot;]
+if changes:
+    print(f&quot;NOT EMPTY: {len(changes)} change(s) after deploy&quot;)
+    for c in changes:
+        oid = c.get(&quot;object_id&quot;, {})
+        print(f&quot;  {c.get('type')} {oid.get('domain')} {oid.get('fqn')}&quot;)
+    sys.exit(1)
+print(&quot;re-plan is empty: definitions and live objects agree&quot;)
+</code></pre>
+<p><strong><code>scripts/flyway_ci.sh</code></strong>. Runs the pinned Flyway image in Docker. It builds the JDBC URL from environment variables so no secret is ever written into the repository.</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# Usage: FLY_DB=&lt;database&gt; KEY_FILE=&lt;path to private key&gt; scripts/flyway_ci.sh &lt;flyway args...&gt;
+set -euo pipefail
+: &quot;${FLY_DB:?set FLY_DB}&quot; &quot;${KEY_FILE:?set KEY_FILE}&quot;
+: &quot;${SNOWFLAKE_ACCOUNT:?}&quot; &quot;${SNOWFLAKE_WAREHOUSE:?}&quot; &quot;${SNOWFLAKE_ROLE:?}&quot;
+IMAGE=&quot;${FLY_IMAGE:-redgate/flyway:13.12.2}&quot;      # pin by digest too, see section 5.14
+if [ &quot;${HYBRID_MODE:-H}&quot; = &quot;H&quot; ]; then
+  LOC=&quot;filesystem:migrations/common,filesystem:migrations/hybrid&quot;
+else
+  LOC=&quot;filesystem:migrations/common,filesystem:migrations/standard&quot;
+fi
+URL=&quot;jdbc:snowflake://${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/?db=${FLY_DB}&amp;warehouse=${SNOWFLAKE_WAREHOUSE}&amp;role=${SNOWFLAKE_ROLE}&amp;authenticator=snowflake_jwt&amp;private_key_file=/keys/key.p8&quot;
+docker run --rm \
+  -v &quot;$PWD/flyway:/flyway/project&quot; \
+  -v &quot;${KEY_FILE}:/keys/key.p8:ro&quot; \
+  -e FLYWAY_URL=&quot;$URL&quot; \
+  -e FLYWAY_LOCATIONS=&quot;$LOC&quot; \
+  -e FLYWAY_PLACEHOLDERS_CALC_DB=&quot;$FLY_DB&quot; \
+  -e FLYWAY_PLACEHOLDERS_CALC_SCHEMA=&quot;CALC_SUPPORT&quot; \
+  -e PRIVATE_KEY_PASSPHRASE \
+  -e JAVA_OPTS=&quot;-Dnet.snowflake.jdbc.useBundledBouncyCastleForPrivateKeyDecryption=true&quot; \
+  &quot;$IMAGE&quot; -workingDirectory=project &quot;$@&quot;
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> Docker form <code>docker run --rm -v &lt;project&gt;:/flyway/project redgate/flyway -workingDirectory=project migrate</code>; JDBC URL with mandatory <code>db</code> and <code>warehouse</code>; key-pair URL parameters <code>authenticator=snowflake_jwt&amp;private_key_file=&lt;absolute path&gt;</code>; env var rule <code>FLYWAY_&lt;UPPER_SNAKE&gt;</code> (https://documentation.red-gate.com/flyway/reference/usage/flyway-docker and .../database-driver-reference/snowflake, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G21]:</strong> Whether Flyway 13.12.2 needs the <code>JAVA_OPTS</code> flag for an encrypted key and how it receives the passphrase from <code>PRIVATE_KEY_PASSPHRASE</code>. The docs mention the flag for encrypted keys on Linux. How to check at lab time: run <code>scripts/flyway_ci.sh info</code> (section 5.9). If it asks for or rejects the passphrase, read the Snowflake driver page and the JDBC <code>private_key_file_pwd</code> property. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-G10]:</strong> Per-environment placeholders inside <code>flyway.toml</code> are not used on purpose. The script sets <code>FLYWAY_PLACEHOLDERS_CALC_DB</code> instead. How to check: <code>flyway info</code> output shows no placeholder error. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-08-02]:</strong> Whether the container user can read a mode-600 key file that belongs to the runner user, and whether Flyway needs a writable home directory. The mount is read-only. How to check at lab time: if you see "permission denied" on the key, add <code>--user "$(id -u):$(id -g)"</code> to the <code>docker run</code> line, or run <code>chmod 644</code> on the temporary key file inside the job (the file lives only for the job and is deleted by <code>if: always()</code>). Record the result in file 13.</p>
+</blockquote>
+<p><strong><code>scripts/pre_dcm_migrations.sh</code></strong>. Implements ordering rule 2 for environments that already have a Flyway history.</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# Run prerequisite migrations (for example a rename) before the DCM plan.
+set -euo pipefail
+: &quot;${FLY_DB:?set FLY_DB}&quot;
+FILE=&quot;flyway/PRE_DCM_TARGET&quot;
+if [ ! -s &quot;$FILE&quot; ]; then echo &quot;PRE_DCM_TARGET empty: no prerequisite migrations&quot;; exit 0; fi
+TARGET=&quot;$(tr -d '[:space:]' &lt; &quot;$FILE&quot;)&quot;
+[[ &quot;$TARGET&quot; =~ ^[0-9]+$ ]] || { echo &quot;PRE_DCM_TARGET must be a whole version number&quot;; exit 1; }
+HAS=&quot;$(snow sql -x --format json -q &quot;SELECT COUNT(*) AS N FROM ${FLY_DB}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME = 'FLYWAY_HISTORY_CALC_SUPPORT'&quot; | jq -r '.[0].N')&quot;
+if [ &quot;$HAS&quot; = &quot;0&quot; ]; then echo &quot;$FLY_DB has no Flyway history yet (fresh environment): DCM goes first&quot;; exit 0; fi
+echo &quot;Applying prerequisite migrations up to version $TARGET in $FLY_DB&quot;
+scripts/flyway_ci.sh migrate -target=&quot;$TARGET&quot;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-06]:</strong> The Flyway option <code>-target=&lt;version&gt;</code> (standard Flyway setting, not read in the docs this pack used). How to check at lab time: <code>docker run --rm redgate/flyway:13.12.2 -?</code> or the Flyway "target" setting page on documentation.red-gate.com. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-08-05]:</strong> The shape of <code>snow sql --format json</code> output (a list of row objects with upper-case column names is expected), and the columns of <code>INFORMATION_SCHEMA.TABLES</code> and <code>INFORMATION_SCHEMA.DATABASES</code> used here. How to check at lab time: run the <code>snow sql</code> command by hand and read the output. Record the result in file 13.</p>
+</blockquote>
+<p><strong><code>scripts/smoke_clone.sql</code> and <code>scripts/assert_zero_int_writes.sql</code></strong>. You wrote both in Lab 5 (file 07, step 5.12). Use them unchanged. The smoke script refuses to run against anything that is not an <code>SBX_DEV_</code> database and takes <code>-D clone_db=&lt;database&gt;</code>. The assertion script takes <code>-D before_results=&lt;n&gt; -D before_exec=&lt;n&gt;</code> and raises an error if the two INT counts changed. The workflow below passes the numbers it recorded before the clone was created.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-07]:</strong> That <code>snow sql -f ... -D name=value</code> with the <code>&lt;% name %&gt;</code> template form and a <code>$$ ... $$</code> block behaves in CI as it did on your laptop in Lab 5 (see TC-07-07). How to check at lab time: re-run the two commands from Lab 5 step 5.12 against a clone before you rely on them in a workflow. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-53-resolve-the-action-pins">Step 5.3 Resolve the action pins</h3>
+<p>Run in: <strong>GitHub UI</strong>.</p>
+<p>The workflows pin third-party actions by full 40-character commit SHA, with the version in a comment. A tag can be moved by its owner, a full SHA cannot. This pack never invents SHAs, so each workflow contains a placeholder and fails at startup until you replace it. That is on purpose.</p>
+<ol>
+<li>Open <code>https://github.com/actions/checkout</code>, Releases, pick the newest release, click its commit, copy the 40-character SHA. Replace every <code>&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;</code> with it.</li>
+<li>Do the same on <code>https://github.com/snowflakedb/snowflake-actions</code> for <code>&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;</code>. Use a <code>v3</code> release.</li>
+<li>Write both SHAs and dates in the "Result at lab time" lines of file 13.</li>
+</ol>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G22]:</strong> Current SHA and inputs of <code>snowflakedb/snowflake-actions</code>. The Snowflake docs name <code>snowflakedb/snowflake-actions@v3</code>, with input <code>cli-version</code>, and DCM sub-actions <code>dcm/plan@v3</code>, <code>dcm/deploy@v3</code>. The sub-actions are not used here, because the CLI commands are clearer to learn. How to check: the action's README on GitHub. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-G22b]:</strong> Which <code>actions/checkout</code> major version to use. Snowflake pages show both <code>@v4</code> and <code>@v7</code>. Pin by SHA from the newest release you can see. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-G16]:</strong> The Snowflake CLI minimum for DCM. The public docs say 3.24.0. NAIC's working notes first said 3.16. The workflows install the version in the repository variable <code>SNOW_CLI_VERSION</code> (3.33.0). Re-check the pin at lab time with <code>pip index versions snowflake-cli</code> or PyPI. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-54-validateyml-lint-and-flyway-validate">Step 5.4 <code>validate.yml</code>: lint and Flyway validate</h3>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/validate.yml</code>).</p>
+<p>This workflow runs on every pull request and on pushes to non-main branches. It never writes to Snowflake.</p>
+<pre><code class="language-yaml">name: validate
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;   # version tag here, TC-G22b
+        with:
+          persist-credentials: false
+      - name: No key material in the repository
+        run: |
+          if git ls-files | grep -E '\.(p8|pem)$|rsa_key|\.env\.flyway$'; then echo &quot;key-like file is tracked&quot;; exit 1; fi
+          if git grep -lE 'BEGIN (ENCRYPTED )?PRIVATE KEY' -- . ':!docs' ':!.github'; then echo &quot;private key text found&quot;; exit 1; fi
+      - name: Flyway file names
+        run: |
+          bad=$(find flyway/migrations -name '*.sql' | xargs -n1 basename | grep -vE '^(V[0-9]+(_[0-9]+)?__[a-z0-9_]+|R__[a-z0-9_]+)\.sql$' || true)
+          if [ -n &quot;$bad&quot; ]; then echo &quot;bad migration names:&quot;; echo &quot;$bad&quot;; exit 1; fi
+      - name: DCM definitions never contain a hybrid table
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          if grep -RInE 'DEFINE[[:space:]]+HYBRID' dcm/; then echo &quot;hybrid tables belong to Flyway&quot;; exit 1; fi
+      - name: Manifest keeps the clone safety placeholder
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: grep -q 'SBX_DEV_SET_ON_CLI' dcm/calc_engine/manifest.yml
+      - name: Helper scripts compile
+        run: python3 -m py_compile scripts/check_plan_for_drops.py scripts/assert_plan_empty.py
+
+  flyway-validate:
+    # Fork pull requests get no secrets, so only run for pushes and same-repository pull requests.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      HYBRID_MODE: ${{ vars.HYBRID_MODE }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;
+        with:
+          persist-credentials: false
+      - name: Write key file
+        env:
+          KEY_CONTENT: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+        run: |
+          umask 077
+          printf '%s\n' &quot;$KEY_CONTENT&quot; &gt; &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+          echo &quot;KEY_FILE=$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;
+      - name: Flyway info and validate against INT (pending migrations allowed)
+        env:
+          FLY_DB: SBX_INT
+        run: |
+          scripts/flyway_ci.sh info
+          scripts/flyway_ci.sh validate -ignoreMigrationPatterns='*:pending'
+      - name: Delete key file
+        if: always()
+        run: rm -f &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+</code></pre>
+<p>Why <code>-ignoreMigrationPatterns='*:pending'</code>: a plain <code>validate</code> treats a migration that exists in the folder but is not yet applied as an error. A pull request is exactly that situation. What you want to catch here is an applied migration whose file was edited or deleted.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-10]:</strong> Flyway's <code>ignoreMigrationPatterns</code> setting and its <code>*:pending</code> pattern (standard Flyway setting, not read in the docs this pack used). How to check at lab time: add a new <code>V99__test.sql</code>, run <code>flyway validate</code> with and without the option, and compare. Delete the test file afterwards. Record the result in file 13.</p>
+<p><strong>VERIFIED:</strong> <code>validate</code> compares available migrations to applied ones; a checksum mismatch or a missing migration is an error (https://documentation.red-gate.com/flyway/reference/commands, read 2026-11-16).</p>
+</blockquote>
+<p>Security note: <code>SNOWFLAKE_PRIVATE_KEY_RAW</code> is only read inside the "Write key file" step. The passphrase is in the job environment, so every step of this job can see it. That is a trade-off kept for readability. The defence is that all actions are pinned by SHA and the job has <code>contents: read</code> only.</p>
+<h3 id="step-55-pr-clone-checkyml-the-pull-request-pipeline">Step 5.5 <code>pr-clone-check.yml</code>: the pull request pipeline</h3>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/pr-clone-check.yml</code>).</p>
+<p>Read the comments. The numbered comments are the order the workflow follows.</p>
+<pre><code class="language-yaml">name: pr-clone-check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+# One run per pull request at a time. Never cancel a running job: its cleanup must not race the next run.
+concurrency:
+  group: pr-clone-${{ github.event.number }}
+  cancel-in-progress: false
+jobs:
+  clone-plan-deploy-test:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    environment: pr-clone
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      HYBRID_MODE: ${{ vars.HYBRID_MODE }}
+    steps:
+      - uses: actions/checkout@&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;
+        with:
+          persist-credentials: false
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+      - name: Names and key file
+        env:
+          KEY_CONTENT: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+        run: |
+          umask 077
+          printf '%s\n' &quot;$KEY_CONTENT&quot; &gt; &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+          {
+            echo &quot;KEY_FILE=$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+            echo &quot;TICKET=PR${PR_NUMBER}&quot;
+            echo &quot;CLONE_DB=SBX_DEV_PR${PR_NUMBER}&quot;
+            echo &quot;PROJECT=SBX_DEV_PR${PR_NUMBER}.CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+            echo &quot;SHORT_SHA=${GITHUB_SHA::7}&quot;
+          } &gt;&gt; &quot;$GITHUB_ENV&quot;
+      - name: 0. Connection test
+        run: snow connection test -x
+
+      - name: 1. Record INT row counts before
+        run: |
+          snow sql -x --format json -q &quot;SELECT (SELECT COUNT(*) FROM SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE) AS R, (SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.EXECUTIONS) AS E&quot; &gt; &quot;$RUNNER_TEMP/int_before.json&quot;
+          cat &quot;$RUNNER_TEMP/int_before.json&quot;
+          {
+            echo &quot;BEFORE_R=$(jq -r '.[0].R' &quot;$RUNNER_TEMP/int_before.json&quot;)&quot;
+            echo &quot;BEFORE_E=$(jq -r '.[0].E' &quot;$RUNNER_TEMP/int_before.json&quot;)&quot;
+          } &gt;&gt; &quot;$GITHUB_ENV&quot;
+
+      - name: 2. Fresh clone for this pull request
+        run: |
+          snow sql -x -q &quot;CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('${TICKET}')&quot;
+          snow sql -x -q &quot;CALL SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE('${TICKET}')&quot; | tee &quot;$RUNNER_TEMP/clone_result.txt&quot;
+          if grep -q '&quot;status&quot;: *&quot;ERROR&quot;' &quot;$RUNNER_TEMP/clone_result.txt&quot;; then echo &quot;clone creation failed&quot;; exit 1; fi
+
+      - name: 3. Flyway info and validate on the clone
+        run: |
+          FLY_DB=&quot;$CLONE_DB&quot; scripts/flyway_ci.sh info
+          FLY_DB=&quot;$CLONE_DB&quot; scripts/flyway_ci.sh validate -ignoreMigrationPatterns='*:pending'
+
+      - name: 4. Prerequisite migrations (rename protocol, ordering rule 2)
+        run: FLY_DB=&quot;$CLONE_DB&quot; scripts/pre_dcm_migrations.sh
+
+      - name: 5. DCM project object in the clone
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: snow dcm create &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine --if-not-exists -x
+
+      - name: 6. Full DCM plan, then fail on any DROP
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          snow dcm plan &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine \
+            -D &quot;calc_db='${CLONE_DB}'&quot; -D &quot;fin_db='${CLONE_DB}'&quot; --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          cp &quot;$PLAN&quot; &quot;$RUNNER_TEMP/plan_full.json&quot;
+          python3 scripts/check_plan_for_drops.py &quot;$RUNNER_TEMP/plan_full.json&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+
+      - name: 7. DCM deploy to the clone
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          snow dcm deploy &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine \
+            -D &quot;calc_db='${CLONE_DB}'&quot; -D &quot;fin_db='${CLONE_DB}'&quot; --alias &quot;pr${PR_NUMBER}-${SHORT_SHA}&quot; -x
+
+      - name: 8. Flyway migrate on the clone
+        run: FLY_DB=&quot;$CLONE_DB&quot; scripts/flyway_ci.sh migrate
+
+      - name: 9. Re-plan must be empty
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          snow dcm plan &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine \
+            -D &quot;calc_db='${CLONE_DB}'&quot; -D &quot;fin_db='${CLONE_DB}'&quot; --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          python3 scripts/assert_plan_empty.py &quot;$PLAN&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+
+      - name: 10. Smoke test inside the clone
+        run: snow sql -x -f scripts/smoke_clone.sql -D clone_db=&quot;$CLONE_DB&quot;
+
+      - name: 11. INT must not have changed
+        run: snow sql -x -f scripts/assert_zero_int_writes.sql -D before_results=&quot;$BEFORE_R&quot; -D before_exec=&quot;$BEFORE_E&quot;
+
+      - name: Delete key file
+        if: always()
+        run: rm -f &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+
+  cleanup:
+    needs: clone-plan-deploy-test
+    if: always() &amp;&amp; github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    environment: pr-clone
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+    steps:
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+      - name: Drop the clone, whatever happened before
+        run: snow sql -x -q &quot;CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('PR${PR_NUMBER}')&quot;
+      - name: Prove no clone is left
+        run: snow sql -x -q &quot;SHOW DATABASES LIKE 'SBX_DEV_PR${PR_NUMBER}'&quot;
+</code></pre>
+<p>What to notice in <code>pr-clone-check.yml</code>:</p>
+<ul>
+<li><strong>Ticket from a number, never from text.</strong> The ticket is <code>PR</code> plus the pull request number, which GitHub supplies as an integer. The clone procedure still validates it (<code>^[A-Za-z0-9]{1,40}$</code>). Never build a ticket from a branch name or a title, because those are free text typed by a person.</li>
+<li><strong>Values go through environment variables</strong>, not <code>${{ ... }}</code> pasted into a <code>run:</code> line. Pasting untrusted text into a shell line is the classic Actions injection mistake.</li>
+<li><strong>Concurrency.</strong> <code>cancel-in-progress: false</code> means a new push queues behind the running job. By default GitHub replaces an older queued run with the newest one, so you never get a long queue.</li>
+</ul>
+<blockquote>
+<p><strong>VERIFIED:</strong> At most one running and one pending job per concurrency group; a newer pending run cancels the older pending one; <code>cancel-in-progress: true</code> would also cancel the running one (https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs, read 2026-11-16).</p>
+</blockquote>
+<ul>
+<li><strong>Cleanup is its own job</strong> with <code>if: always()</code> and the same environment. If the first job is cancelled or fails, the clone is still dropped. A scheduled sweeper (step 5.8) covers the case where even that did not run.</li>
+<li><strong>Variables for DCM</strong> use <code>-D "calc_db='...'"</code> with inner single quotes, as in Lab 3. Without the quotes you get error 1510.</li>
+<li><strong>Role.</strong> The job runs as <code>SBX_CICD_PIPELINE</code> (from <code>SNOWFLAKE_ROLE</code>). The manifest's CLONE target names <code>SBX_CALC_DEV</code> as <code>project_owner</code>, but the CLI never switches roles for you.</li>
+</ul>
+<blockquote>
+<p><strong>VERIFIED:</strong> Targets do not select the connection, account or role. The CLI warns on account mismatch, and at create time on role mismatch with <code>project_owner</code>, but does not switch (https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-08-01]:</strong> Which role should run <code>snow dcm create/plan/deploy</code> for the CLONE target in CI. The clone procedure hands all clone objects to <code>SBX_CALC_DEV</code>, and <code>SBX_CICD_PIPELINE</code> holds <code>SBX_CALC_DEV</code> (grant 1 of the bootstrap), so the pipeline role should inherit enough. If <code>plan</code> or <code>deploy</code> fail with an ownership or privilege error, the alternative is to also grant <code>SBX_CALC_DEV</code> to the service user (<code>GRANT ROLE SBX_CALC_DEV TO USER SBX_SVC_CICD;</code> as <code>ACCOUNTADMIN</code>) and run the DCM steps with <code>--role SBX_CALC_DEV</code>. How to check at lab time: run the first PR and read the error. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-08-03]:</strong> General GitHub behaviours used here that the pack's docs reading did not cover: a <code>pull_request</code> run checks out the merge of your branch into the base branch; pull requests from forks receive no secrets; <code>docker</code>, <code>jq</code> and <code>python3</code> are installed on <code>ubuntu-24.04</code>; <code>if: always()</code> also runs when the run is cancelled. How to check at lab time: GitHub docs for the <code>pull_request</code> event and the runner image README. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-56-deploy-intyml-merge-to-main-deploys-to-int">Step 5.6 <code>deploy-int.yml</code>: merge to main deploys to <code>int</code></h3>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/deploy-int.yml</code>).</p>
+<pre><code class="language-yaml">name: deploy-int
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: deploy-int
+  cancel-in-progress: false
+jobs:
+  deploy-int:
+    runs-on: ubuntu-24.04
+    environment: int          # a required reviewer must approve before anything below runs
+    env:
+      FLY_DB: SBX_INT
+      PROJECT: SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      HYBRID_MODE: ${{ vars.HYBRID_MODE }}
+    steps:
+      - uses: actions/checkout@&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;
+        with:
+          persist-credentials: false
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+      - name: Key file and short sha
+        env:
+          KEY_CONTENT: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+        run: |
+          umask 077
+          printf '%s\n' &quot;$KEY_CONTENT&quot; &gt; &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+          echo &quot;KEY_FILE=$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;
+          echo &quot;SHORT_SHA=${GITHUB_SHA::7}&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;
+      - name: Connection test
+        run: snow connection test -x
+      - name: Prerequisite migrations (ordering rule 2)
+        run: scripts/pre_dcm_migrations.sh
+      - name: Full DCM plan, then fail on any DROP
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          snow dcm plan &quot;$PROJECT&quot; --target INT --from dcm/calc_engine --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          python3 scripts/check_plan_for_drops.py &quot;$PLAN&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+      - name: DCM deploy
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: snow dcm deploy &quot;$PROJECT&quot; --target INT --from dcm/calc_engine --alias &quot;int-${SHORT_SHA}&quot; -x
+      - name: Flyway migrate
+        run: scripts/flyway_ci.sh migrate
+      - name: Re-plan must be empty
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          snow dcm plan &quot;$PROJECT&quot; --target INT --from dcm/calc_engine --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          python3 scripts/assert_plan_empty.py &quot;$PLAN&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+      - name: Delete key file
+        if: always()
+        run: rm -f &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+</code></pre>
+<p>Two design points to discuss:</p>
+<ul>
+<li>The approval happens before the plan runs. The reviewer approves a commit, not a plan. A stricter design has a first job without an environment that plans and publishes the summary, and a second job with <code>environment: int</code> that deploys. Because DEPLOY recomputes its own plan, the drop check runs again inside the deploy job anyway.</li>
+<li><code>concurrency</code> with <code>cancel-in-progress: false</code> is the <code>resource_group</code> idea: two merges in a row queue up, they do not run side by side.</li>
+</ul>
+<h3 id="step-57-promote-qa-prodyml-manual-promotion-to-qa-or-prod">Step 5.7 <code>promote-qa-prod.yml</code>: manual promotion to <code>qa</code> or <code>prod</code></h3>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/promote-qa-prod.yml</code>).</p>
+<pre><code class="language-yaml">name: promote-qa-prod
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: &quot;Environment to promote to&quot;
+        type: choice
+        options: [qa, prod]
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: promote-${{ inputs.target }}
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.target }}      # qa or prod, each with its own reviewer
+    env:
+      TARGET: ${{ inputs.target }}
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      HYBRID_MODE: ${{ vars.HYBRID_MODE }}
+    steps:
+      - uses: actions/checkout@&lt;FULL_SHA_ACTIONS_CHECKOUT&gt;
+        with:
+          persist-credentials: false
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+      - name: Map the input to names (fixed list, no free text)
+        env:
+          KEY_CONTENT: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+        run: |
+          case &quot;$TARGET&quot; in
+            qa)   echo &quot;FLY_DB=SBX_QA&quot;   &gt;&gt; &quot;$GITHUB_ENV&quot;; echo &quot;DCM_TARGET=QA&quot;   &gt;&gt; &quot;$GITHUB_ENV&quot; ;;
+            prod) echo &quot;FLY_DB=SBX_PROD&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;; echo &quot;DCM_TARGET=PROD&quot; &gt;&gt; &quot;$GITHUB_ENV&quot; ;;
+            *) echo &quot;unknown target&quot;; exit 1 ;;
+          esac
+          umask 077
+          printf '%s\n' &quot;$KEY_CONTENT&quot; &gt; &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+          echo &quot;KEY_FILE=$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;
+          echo &quot;SHORT_SHA=${GITHUB_SHA::7}&quot; &gt;&gt; &quot;$GITHUB_ENV&quot;
+      - name: Prerequisite migrations (only if this environment already has a history)
+        run: scripts/pre_dcm_migrations.sh
+      - name: DCM project object, plan, drop check, deploy
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          PROJECT=&quot;SBX_$( [ &quot;$DCM_TARGET&quot; = QA ] &amp;&amp; echo QA || echo PROD ).CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+          snow dcm create &quot;$PROJECT&quot; --target &quot;$DCM_TARGET&quot; --from dcm/calc_engine --if-not-exists -x
+          snow dcm plan &quot;$PROJECT&quot; --target &quot;$DCM_TARGET&quot; --from dcm/calc_engine --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          python3 scripts/check_plan_for_drops.py &quot;$PLAN&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+          snow dcm deploy &quot;$PROJECT&quot; --target &quot;$DCM_TARGET&quot; --from dcm/calc_engine --alias &quot;${TARGET}-${SHORT_SHA}&quot; -x
+      - name: Flyway migrate (own history table in this database)
+        run: scripts/flyway_ci.sh migrate
+      - name: Re-plan must be empty
+        if: ${{ vars.DCM_MODE != 'off' }}
+        run: |
+          PROJECT=&quot;SBX_$( [ &quot;$DCM_TARGET&quot; = QA ] &amp;&amp; echo QA || echo PROD ).CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+          snow dcm plan &quot;$PROJECT&quot; --target &quot;$DCM_TARGET&quot; --from dcm/calc_engine --save-output -x
+          PLAN=&quot;$(ls dcm/calc_engine/out/plan*.json | head -n1)&quot;
+          python3 scripts/assert_plan_empty.py &quot;$PLAN&quot; | tee -a &quot;$GITHUB_STEP_SUMMARY&quot;
+      - name: Delete key file
+        if: always()
+        run: rm -f &quot;$RUNNER_TEMP/sbx_svc_cicd_rsa_key.p8&quot;
+</code></pre>
+<p>A fresh <code>SBX_QA</code> has an empty <code>CALC_SUPPORT</code> schema (created by the bootstrap). The first run therefore creates everything: DCM first (sequences, standard tables, procedures, grants), then Flyway (hybrid pair or stand-ins, indexes, data change, rename). This is the "baseline INT, create QA and PROD for real" story from NAIC's calc-admin plan, in miniature (Lab 7 revisits it).</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-04]:</strong> Whether Flyway migrations written in Lab 4 replay cleanly on a brand-new environment. Two risks. First, <code>V3</code> asserts an <code>EXPECTED_ROWS</code> constant on <code>CALCULATIONS</code>, but a new QA database has different rows than INT, so the assertion can fail. Second, <code>V4</code> renames <code>FORMULA_CATEGORIES</code>, but in a new environment DCM has already created <code>CALC_CATEGORIES</code> and the old table never existed, so a plain <code>ALTER TABLE ... RENAME</code> fails (an <code>ALTER TABLE IF EXISTS ... RENAME</code> form would be a no-op). How to check at lab time: run the promote to <code>qa</code> and read the Flyway error, if any. Fix forward: make those two migrations tolerant, and record what you changed. Never edit an applied migration in INT. Record the result in file 13.</p>
+</blockquote>
+<p>Note that the <code>QA</code> and <code>PROD</code> DCM targets in the manifest use <code>fin_db: SBX_INT_FIN</code>, the shared results database. Check that your manifest matches.</p>
+<h3 id="step-58-sweep-stale-clonesyml-the-safety-net">Step 5.8 <code>sweep-stale-clones.yml</code>: the safety net</h3>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/sweep-stale-clones.yml</code>).</p>
+<p>A job can die before cleanup (runner lost, quota). The sweeper drops any <code>SBX_DEV_PR&lt;number&gt;</code> database older than one day. It only ever builds a ticket from a name that matches <code>^SBX_DEV_PR[0-9]+$</code>, then calls the guarded drop procedure, never a raw <code>DROP DATABASE</code>.</p>
+<pre><code class="language-yaml">name: sweep-stale-clones
+on:
+  schedule:
+    - cron: &quot;17 5 * * *&quot;
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sweep
+  cancel-in-progress: false
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    environment: pr-clone
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+    steps:
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+      - name: Drop PR clones older than one day
+        run: |
+          snow sql -x --format json -q &quot;SELECT DATABASE_NAME FROM SBX_INT.INFORMATION_SCHEMA.DATABASES WHERE DATABASE_NAME LIKE 'SBX_DEV_PR%' AND CREATED &lt; DATEADD(day, -1, CURRENT_TIMESTAMP())&quot; &gt; old.json
+          jq -r '.[].DATABASE_NAME' old.json | while read -r NAME; do
+            if [[ &quot;$NAME&quot; =~ ^SBX_DEV_PR[0-9]+$ ]]; then
+              TICKET=&quot;${NAME#SBX_DEV_}&quot;
+              echo &quot;dropping stale clone $NAME&quot;
+              snow sql -x -q &quot;CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('${TICKET}')&quot;
+            fi
+          done
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-05]:</strong> The <code>INFORMATION_SCHEMA.DATABASES</code> view and its <code>CREATED</code> column, and the JSON key <code>DATABASE_NAME</code>. How to check at lab time: run the <code>SELECT</code> in a worksheet and read the columns. Fallback: <code>SHOW DATABASES LIKE 'SBX_DEV_PR%'</code> and read <code>created_on</code>. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-59-first-pull-request-run">Step 5.9 First pull request run</h3>
+<p>Run in: <strong>Terminal</strong>. You run git yourself. The assistant never runs <code>git commit</code>, <code>git push</code>, <code>git pull</code> or <code>git fetch</code> for you unless you ask for that exact command in that request.</p>
+<pre><code class="language-bash">git switch -c feature/LAB6A
+# edit README.md: add one line, for example &quot;Lab 6 first pipeline run&quot;
+git add .github/workflows scripts README.md
+git commit -m &quot;ci: add six workflows and helper scripts&quot;
+git push -u origin feature/LAB6A
+</code></pre>
+<p>Run in: <strong>GitHub UI</strong>. Open a pull request from <code>feature/LAB6A</code> to <code>main</code>. Open the "Checks" tab.</p>
+<p>You should see:</p>
+<ul>
+<li><code>validate</code> with two jobs, green.</li>
+<li><code>pr-clone-check</code> with job <code>clone-plan-deploy-test</code>, then job <code>cleanup</code>. The first run is the one most likely to fail on a small setup detail. Read the failing step name: it tells you which numbered stage broke. Typical first failures are the placeholder SHAs (workflow does not start), a passphrase or key-file problem in the Flyway step (TC-G21, TC-08-02), and a role problem in the DCM steps (TC-08-01).</li>
+<li>On success, the step summary of step 6 shows <code>plan changes: N  drops: 0</code>. N is greater than zero on a fresh clone because the new project adopts every cloned object. Step 9 shows <code>re-plan is empty</code>.</li>
+</ul>
+<p>Run in: <strong>Snowsight worksheet</strong> while the job runs:</p>
+<pre><code class="language-sql">SHOW DATABASES LIKE 'SBX_DEV_PR%';       -- one row while the job runs: SBX_DEV_PR1 (your PR number)
+</code></pre>
+<p>After the <code>cleanup</code> job finishes, run it again. You should see 0 rows.</p>
+<p>If the first run turns a TO-CONFIRM item into a fix, write it into the "Result at lab time" line for that id in file 13.</p>
+<h3 id="step-510-read-what-the-pipeline-proved">Step 5.10 Read what the pipeline proved</h3>
+<p>Run in: <strong>GitHub UI</strong>, open the job log of <code>clone-plan-deploy-test</code>.</p>
+<ol>
+<li>Step 1 prints the INT counts before the clone exists. Step 11 runs <code>assert_zero_int_writes.sql</code> with those numbers and must print <code>PASS: INT row counts unchanged</code>. That is your "zero writes to INT" evidence.</li>
+<li>Step 6 prints <code>plan changes</code> and lists any DROP. With no definition removed, there are none. The other changes are adoptions of the cloned objects.</li>
+<li>Step 8 prints the Flyway result. For a branch that adds no migration it says the schema is up to date.</li>
+<li>Step 9 prints <code>re-plan is empty</code>.</li>
+</ol>
+<p>Checkpoint: if the PR touches only a README, why does step 6 still list plan changes? (Answer 4 in section 6.)</p>
+<h3 id="step-511-merge-and-approve-int">Step 5.11 Merge and approve <code>int</code></h3>
+<p>Run in: <strong>GitHub UI</strong>. Merge the pull request. Open the Actions tab, run <code>deploy-int</code>. The run shows "Waiting for review". Click <strong>Review deployments</strong>, tick <code>int</code>, approve.</p>
+<p>You should see: the job runs, step "DCM deploy" prints a deployment with alias <code>int-&lt;7 characters of the commit&gt;</code>, and the final re-plan is empty.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SHOW DEPLOYMENTS IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;   -- your alias int-&lt;sha&gt; is in the list
+</code></pre>
+<p>Mode D-off: the DCM steps are skipped, you only see the Flyway step.</p>
+<h3 id="step-512-promote-to-qa-and-prod">Step 5.12 Promote to <code>qa</code> and <code>prod</code></h3>
+<p>Run in: <strong>GitHub UI</strong>, Actions, <code>promote-qa-prod</code>, Run workflow, target <code>qa</code>. Approve the <code>qa</code> environment. Repeat with <code>prod</code>.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SHOW TABLES IN SCHEMA SBX_QA.CALC_SUPPORT;
+SELECT &quot;version&quot;, &quot;description&quot;, &quot;success&quot;
+FROM SBX_QA.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT ORDER BY &quot;installed_rank&quot;;
+</code></pre>
+<p>You should see the engine tables, the hybrid pair (Mode H) or the stand-ins (Mode S), and a history that lists the same versions as INT, in the QA database, with its own rows.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-08-08]:</strong> The column names of the Flyway history table on Snowflake (lower-case quoted names such as <code>"version"</code> are expected). How to check at lab time: <code>SELECT * FROM SBX_QA.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT;</code> and read the header. Record the result in file 13.</p>
+</blockquote>
+<p>If the promote fails in Flyway, see TC-08-04 above. This is a real finding about replaying migrations on a new environment, not a typo of yours.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables">If you are in Mode S (no hybrid tables)</h4>
+<p>Set the repository variable <code>HYBRID_MODE</code> to <code>S</code>. <code>flyway_ci.sh</code> then reads <code>migrations/common</code> plus <code>migrations/standard</code>. Everything else in this lab runs unchanged. Remember that switching modes after a history exists needs a fresh history, because the checksums of the two variants differ.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Set <code>DCM_MODE</code> to <code>off</code>. The steps with <code>if: ${{ vars.DCM_MODE != 'off' }}</code> are skipped. The Flyway, clone, smoke and zero-write steps still run. Replace the DROP check with a read-along: in file 05, look at the sample plan output and read what a DROP entry looks like.</p>
+<h3 id="step-513-optional-stretch-github-oidc-no-stored-key-1-hour">Step 5.13 Optional stretch: GitHub OIDC, no stored key (1 hour)</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>ACCOUNTADMIN</code> (connection <code>sbx_admin</code>), only for this stretch.</p>
+<pre><code class="language-sql">CREATE USER SBX_SVC_OIDC
+  TYPE = SERVICE
+  DEFAULT_ROLE = SBX_CALC_READER
+  DEFAULT_WAREHOUSE = SBX_CALC_WH
+  WORKLOAD_IDENTITY = (
+    TYPE = OIDC
+    ISSUER = 'https://token.actions.githubusercontent.com'
+    SUBJECT = 'repo:&lt;GITHUB_OWNER&gt;/snowflake-calc-sandbox:environment:int'
+  );
+GRANT ROLE SBX_CALC_READER TO USER SBX_SVC_OIDC;
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> The <code>WORKLOAD_IDENTITY = (TYPE = OIDC ISSUER = ... SUBJECT = ...)</code> form on a <code>TYPE = SERVICE</code> user. <code>SUBJECT</code> must equal the <code>sub</code> claim GitHub issues. When a job sets <code>environment:</code>, GitHub always uses the form <code>repo:&lt;owner&gt;/&lt;repo&gt;:environment:&lt;name&gt;</code> regardless of trigger (https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G13]:</strong> Whether OIDC or workload-identity users can be created and used in a trial account. The docs do not say either way. How to check at lab time: run the <code>CREATE USER</code> above. If it fails, copy the exact error into file 13 and stop the stretch. Record the result in file 13.</p>
+</blockquote>
+<p>Run in: <strong>Terminal</strong> (create <code>.github/workflows/oidc-connection-test.yml</code>):</p>
+<pre><code class="language-yaml">name: oidc-connection-test
+on: workflow_dispatch
+permissions:
+  id-token: write      # allows the job to request a GitHub OIDC token
+  contents: read
+jobs:
+  oidc-test:
+    runs-on: ubuntu-24.04
+    environment: int
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_ROLE: SBX_CALC_READER
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+    steps:
+      - uses: snowflakedb/snowflake-actions@&lt;FULL_SHA_SNOWFLAKE_ACTIONS&gt;   # v3, TC-G22
+        with:
+          cli-version: ${{ vars.SNOW_CLI_VERSION }}
+          use-oidc: true
+      - name: Who am I (no key, no password in this job)
+        run: snow sql -x -q &quot;SELECT CURRENT_USER(), CURRENT_ROLE()&quot;
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> With <code>use-oidc: true</code> the action sets <code>SNOWFLAKE_AUTHENTICATOR=WORKLOAD_IDENTITY</code>, <code>SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER=OIDC</code>, <code>SNOWFLAKE_AUDIENCE=snowflakecomputing.com</code> and <code>SNOWFLAKE_TOKEN</code>; the workflow needs <code>permissions: id-token: write</code>; the Snowflake CLI must be 3.11.0 or higher; you still pass the account (https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action and https://github.com/marketplace/actions/snowflake-actions, read 2026-11-16).</p>
+</blockquote>
+<p>Run the workflow from the Actions tab and approve <code>int</code>. You should see one row with <code>SBX_SVC_OIDC</code> and <code>SBX_CALC_READER</code>.</p>
+<p>Limits to remember:</p>
+<ul>
+<li><strong>Flyway.</strong> The Flyway Snowflake driver page lists key pair, PAT, OAuth and SSO, and does not list workload identity. So today a pipeline that uses OIDC for the Snowflake CLI can still need a key for Flyway. NAIC's target says Flyway also moves to federation, which is why this item is open.</li>
+</ul>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G28]:</strong> Flyway authentication with workload identity. Not listed in the Flyway Snowflake driver page. How to check at lab time: search the Flyway release notes and the driver page for "workload identity" or "OIDC". Record the result in file 13.</p>
+</blockquote>
+<ul>
+<li><strong>Subject strings.</strong> GitHub issues a different <code>sub</code> for pull requests without an environment, branch pushes and environment jobs. One Snowflake user matches one subject. NAIC solves it with separate identities for review, INT, QA and PROD.</li>
+<li><strong>Wildcards.</strong> A trailing <code>*</code> wildcard for the subject was announced in a 2026_08 behaviour change bundle and is disabled by default. Do not rely on it. (Seen in a search snippet only, not opened.)</li>
+</ul>
+<h3 id="step-514-supply-chain-review">Step 5.14 Supply-chain review</h3>
+<p>Run in: <strong>Terminal</strong> and <strong>editor</strong>. This is a reading and checking step. Make a table in your notes with three columns: rule, where the sandbox enforces it, how NAIC would enforce it.</p>
+<table>
+<thead>
+<tr>
+<th>Rule NAIC cares about</th>
+<th>Where it lives in the sandbox</th>
+<th>How NAIC applies it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>latest</code> tags</td>
+<td><code>redgate/flyway:13.12.2</code> in <code>flyway_ci.sh</code>; <code>cli-version</code> from <code>SNOW_CLI_VERSION</code></td>
+<td>Internally mirrored, immutable images; versions in a reviewed profile (profiles 9.22.1, core 3.4.2, deployment 3.0.0).</td>
+</tr>
+<tr>
+<td>Pin by digest</td>
+<td>Tag plus digest <code>sha256:ccc7fe019c49ea1f7d1a63bab7c4f5d490570783cc0ccf8edccc49a209f5f7c0</code> for <code>redgate/flyway:13.12.2</code></td>
+<td>Digest recorded in the mirror, SBOM and scan evidence kept.</td>
+</tr>
+<tr>
+<td>Pin actions by commit SHA</td>
+<td><code>uses: ...@&lt;FULL_SHA&gt;</code> with version comment</td>
+<td>Include pinned by version in a profile, not by branch.</td>
+</tr>
+<tr>
+<td>No runtime downloads in deploy jobs</td>
+<td>The only download is the image pull and the action install. A hardened version pre-bakes them.</td>
+<td>No <code>curl</code>, no package install inside deploy jobs.</td>
+</tr>
+<tr>
+<td>Tools from the internal mirror</td>
+<td>The sandbox pulls from public sources</td>
+<td>Snowflake CLI 3.33.0 is in the internal PyPI proxy. There is no Snowflake CLI image. Flyway must come as an internal immutable image.</td>
+</tr>
+<tr>
+<td>Least privilege tokens</td>
+<td><code>permissions: contents: read</code>, <code>id-token: write</code> only in the OIDC job</td>
+<td>MR jobs never receive INT, QA or PROD credentials.</td>
+</tr>
+<tr>
+<td>Separate identities per environment</td>
+<td>One service user in the sandbox (limit)</td>
+<td>Review, INT, QA and PROD each have an identity.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>VERIFIED:</strong> Pinning styles for <code>snowflakedb/snowflake-actions</code> are a 40-character SHA (most secure), a patch tag, or a floating major tag; the action does not pin the Snowflake CLI itself, so set <code>cli-version</code> (https://github.com/marketplace/actions/snowflake-actions, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-08-09]:</strong> The Flyway image digest. The digest above was seen on 2026-11-16 for <code>redgate/flyway:13.12.2</code> and must be re-read before you use it. How to check at lab time: Docker Hub tag page for <code>redgate/flyway</code>. To pin by digest, set <code>FLY_IMAGE=redgate/flyway:13.12.2@sha256:&lt;digest you read&gt;</code>. Record the result in file 13.</p>
+</blockquote>
+<p>Optional exercise: change <code>FLY_IMAGE</code> in <code>flyway_ci.sh</code> to use the digest, run <code>info</code>, and confirm nothing else changes.</p>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Which GitLab feature does <code>concurrency: group: deploy-int</code> with <code>cancel-in-progress: false</code> replace, and why is cancelling a running deploy dangerous?</li>
+<li>Why is the ticket for a pull request clone built from the pull request number and not from the branch name?</li>
+<li>In <code>pr-clone-check.yml</code>, why is cleanup a separate job with <code>if: always()</code>?</li>
+<li>A pull request that only edits <code>README.md</code> still shows plan changes in step 6. Name one reason.</li>
+<li>What does step 11 compare, and why are the "before" numbers recorded in step 1 and not read at the end?</li>
+<li>Why can the DROP check pass in the pull request and still the deploy to <code>int</code> remove an object?</li>
+<li>Why does the promote workflow map <code>qa</code> and <code>prod</code> to names with a <code>case</code> statement instead of using the input directly in a command?</li>
+<li>What makes OIDC safer than a key-pair secret, and what still needs a key in the sandbox?</li>
+</ol>
+<p><strong>Answers</strong></p>
+<ol>
+<li>The GitLab <code>resource_group</code>. Cancelling a running deploy can stop it between DDL statements, and Snowflake DDL commits on its own, so you would be left with half the change applied.</li>
+<li>The number is an integer chosen by GitHub. A branch name or title is free text typed by a person and could contain anything. The procedure also validates the ticket, but the first line of defence is not to build it from text.</li>
+<li>If the first job fails or is cancelled, later steps in it do not run. A separate job with <code>if: always()</code> runs anyway, so the clone is dropped.</li>
+<li>The clone gets a brand-new DCM project object with no deployment history. DCM does not yet manage any of the cloned objects, so the first plan lists them as changes (adoption of existing objects, as in Lab 3). Only a DROP is a problem. The re-plan in step 9 is the one that must be empty.</li>
+<li>The two counts of INT result rows and executions, before and after the run. The "before" values must be taken before the clone is created, otherwise a leak that happened early would already be part of the baseline.</li>
+<li>DEPLOY recomputes its own plan against whatever INT looks like at that moment. If INT changed after the PR plan, or the PR plan ran against a clone and INT differs, the deploy can differ. The deploy job runs the drop check again, but only a human who reads the plan sees the intent.</li>
+<li>The input comes from a choice list, but defence in depth says never place any input text into a shell command or an object name. A fixed <code>case</code> list gives only known values.</li>
+<li>OIDC removes a long-lived secret: the token is short-lived and tied to the repository and environment. Flyway still needs a key because the driver page does not list workload identity (TC-G28).</li>
+</ol>
+<h2 id="7-break-it">7. Break it</h2>
+<p><strong>Drill: delete a definition in a pull request.</strong></p>
+<ol>
+<li>Run in <strong>Terminal</strong>: <code>git switch -c feature/LAB6B</code>. Delete <code>dcm/calc_engine/sources/definitions/tables/FORMULAS.sql</code>. Commit and push. You run git yourself.</li>
+<li>Open a pull request.</li>
+<li>Symptom: <code>pr-clone-check</code> fails at step 6 with <code>plan changes: ... drops: 1</code> and a line <code>DROP TABLE SBX_DEV_PR&lt;n&gt;.CALC_SUPPORT.FORMULAS</code> (the domain text may differ).</li>
+<li>Diagnosis: read the step summary. DEPLOY drops objects that are managed but no longer defined. Step 7 never ran, so the clone still has the table.</li>
+<li>Check the cleanup job ran and <code>SHOW DATABASES LIKE 'SBX_DEV_PR%'</code> returns nothing.</li>
+<li>Recovery: restore the file in your editor (or ask the assistant to restore it, then you run the git command), push, and watch the run go green.</li>
+</ol>
+<p>Lesson: the drop check turns a silent data-loss deploy into a red pull request. It cannot tell a deliberate drop from an accident, so a human still has to decide. NAIC's version uses an exact-FQN approval file and fails if an approval is unused.</p>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Approval happens before the plan, not on the plan</td>
+<td>Step 5.6 design point</td>
+<td>Split into plan job and deploy job; drop check inside deploy</td>
+<td>VERIFIED by docs: DEPLOY recomputes its plan</td>
+</tr>
+<tr>
+<td>DROP check sees only the saved plan, not the intent</td>
+<td>Break it</td>
+<td>Exact-FQN approval file (NAIC design)</td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Environments with reviewers need a public repository on Free plans</td>
+<td>Step 5.1</td>
+<td>Make the repo public, or use <code>workflow_dispatch</code> plus branch protection</td>
+<td>VERIFIED; learner plan TO-CONFIRM (TC-08-03)</td>
+</tr>
+<tr>
+<td>Fork pull requests get no secrets</td>
+<td>Step 5.4 <code>if:</code> guard</td>
+<td>Only same-repository PRs run clone jobs</td>
+<td>TO-CONFIRM (TC-08-03)</td>
+</tr>
+<tr>
+<td>Flyway has no workload identity login documented</td>
+<td>Step 5.13</td>
+<td>Key file for Flyway until supported</td>
+<td>TO-CONFIRM (TC-G28)</td>
+</tr>
+<tr>
+<td>Migrations may not replay on a new environment</td>
+<td>Step 5.12</td>
+<td>Tolerant migrations, <code>IF EXISTS</code> renames, pending-count assertions</td>
+<td>TO-CONFIRM (TC-08-04)</td>
+</tr>
+<tr>
+<td>One service user and role for all environments</td>
+<td>Whole lab</td>
+<td>NAIC uses separate identities per environment</td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Job-level secrets are visible to every step</td>
+<td>Step 5.4 security note</td>
+<td>SHA pins, least <code>permissions</code>, or step-level <code>env:</code></td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Clone cost and time scale with data</td>
+<td>Step 5.9</td>
+<td><code>DATA_RETENTION_TIME_IN_DAYS = 0</code>, sweeper</td>
+<td>VERIFIED (docs: clone is size-of-data for hybrid tables)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>Every GitLab concept NAIC plans (stages, protected environments, <code>resource_group</code>, OIDC, merged results, <code>rules:</code>) has a GitHub Actions counterpart, and you built each one.</li>
+<li>A pull request pipeline can create a private clone, run Flyway and DCM into it, fail on a DROP, prove an empty re-plan and a zero-write source, then always clean up.</li>
+<li>Ordering matters: DCM first for new objects, Flyway first for renames, and the pipeline needs a switch for the second case.</li>
+<li>Approval gates protect environments, but only a reviewed plan protects data. DEPLOY recomputes.</li>
+<li>Pin everything, give each job the least permission, and prefer a short-lived identity to a stored key.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SHOW DATABASES LIKE 'SBX_DEV_%';
+-- for every row left over:  CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('&lt;ticket&gt;');
+</code></pre>
+<p>Keep: the six workflow files, the helper scripts, <code>SBX_QA</code> and <code>SBX_PROD</code> contents (Lab 7 and the drills use <code>SBX_INT</code>, QA and PROD are optional later). If you did the OIDC stretch and are finished, as <code>ACCOUNTADMIN</code>: <code>DROP USER IF EXISTS SBX_SVC_OIDC;</code>.</p>
+<p>Cost: each pull request run creates a clone (near zero storage until data diverges) and runs on <code>SBX_CALC_WH</code> for a few minutes at X-Small. Check the resource monitor <code>SBX_CALC_RM</code> in Snowsight after the lab.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p>Six workflow files committed by you (<code>validate.yml</code>, <code>pr-clone-check.yml</code>, <code>deploy-int.yml</code>, <code>promote-qa-prod.yml</code>, <code>sweep-stale-clones.yml</code>, <code>oidc-connection-test.yml</code>); helper scripts <code>scripts/check_plan_for_drops.py</code>, <code>scripts/assert_plan_empty.py</code>, <code>scripts/flyway_ci.sh</code>, <code>scripts/pre_dcm_migrations.sh</code> (plus <code>scripts/smoke_clone.sql</code> and <code>scripts/assert_zero_int_writes.sql</code> from Lab 5); an empty <code>flyway/PRE_DCM_TARGET</code> file; at least one green PR run with the clone created and dropped; <code>int</code> deployed through approval; <code>SBX_QA</code> and <code>SBX_PROD</code> filled; no <code>SBX_DEV_PR*</code> database left.</p>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G04, TC-G10, TC-G13, TC-G16, TC-G21, TC-G22, TC-G22b, TC-G28, TC-08-01, TC-08-02, TC-08-03, TC-08-04, TC-08-05, TC-08-06, TC-08-07, TC-08-08, TC-08-09, TC-08-10.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Go on to <a href="09-lab7-calc-admin-lifecycle-in-miniature.md">Lab 7: the calc-admin lifecycle in miniature</a>.</p>
+</body></html>

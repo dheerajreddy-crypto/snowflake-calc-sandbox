@@ -1,0 +1,652 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 8: failure drills and limitations (file 10)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-8-failure-drills-and-limitations-file-10">Lab 8: failure drills and limitations (file 10)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 8 | <strong>File no:</strong> 10 | <strong>Time:</strong> 2 to 3 h | <strong>Prerequisites:</strong> files 08 and 09 done | <strong>Modes supported:</strong> H or S, D (DCM drills become read-along in Mode D-off; hybrid-specific notes are read-only in Mode S) | <strong>Leaves behind:</strong> everything restored to the end state of Lab 7; a table of nine drills filled in by you; any triggered drill resource monitor removed.</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>Break things on purpose, in a safe place, and practise the full cycle for each failure: symptom, diagnosis, recovery, lesson.</p>
+<p>The nine drills:</p>
+<ol>
+<li>A migration that fails half-way.</li>
+<li>An applied migration that someone edited.</li>
+<li>A definition that was deleted (DCM drops the object).</li>
+<li>A change made by hand (drift).</li>
+<li>The wrong target (the manifest safety placeholder).</li>
+<li>A stale plan.</li>
+<li>Clone leakage (a clone that writes to the source).</li>
+<li>Expired or wrong credentials.</li>
+<li>A cost runaway (resource monitor).</li>
+</ol>
+<p>You finish with a consolidated table of limitations for four ways of working: no tooling, Flyway only, DCM only, and both.</p>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world (NAIC).</strong> <code>calc-engine-complete-architecture.html</code> section 12 states there is no universal rollback: "Snowflake DDL commits independently. DCM definition recovery and Flyway history do not restore DML or historical table contents." It names the drills the platform must rehearse: a DCM failure (small deployment, restore prior definitions), a Flyway failure ("failure after first DDL and recovery rehearsal"), clone leakage ("zero INT writes assertion, cleanup always, scheduled sweeper"), source drift ("controlled out-of-band edit detected and blocked") and data recovery (Time Travel or backups).</p>
+<p>The DCM branch notes record the real hazards in the same list: DCM drops anything not defined, hand edits in PROD are reverted by the next deploy, a clone that forgets its redirects writes to INT, and a forgotten command-line override must fail instead of touching INT (that is why the clone target uses a database name that does not exist, <code>CALC_DEV_SET_ON_CLI</code>). On JWT login, the only NAIC mention found was a negative observation in a test note ("Key was valid; no JWT/390144 error occurred"). There is no NAIC incident write-up, so the credential drill is built from the public Snowflake error table.</p>
+<p>Nothing in this lab touches NAIC. Every drill runs in your sandbox, and every destructive one runs in a throwaway clone or a throwaway object, never in <code>SBX_INT</code> itself.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Terminal</strong> (repository root).</p>
+<pre><code class="language-bash">snow connection test -c sbx_dev          # OK
+snow connection test -c sbx_owner        # OK
+ls scripts/refresh_dev_clone.sh scripts/check_plan_for_drops.py sql/lab1/drift_detective.sql
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SHOW DATABASES LIKE 'SBX_DEV_%';                                              -- expect 0 rows
+SELECT &quot;version&quot;, &quot;success&quot; FROM SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT ORDER BY &quot;installed_rank&quot;;   -- 1 to 5, all success (column names: TC-08-08)
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_CATEGORIES;                   -- 2 (or FORMULA_CATEGORIES if Lab 4 is unfinished)
+</code></pre>
+<p>If the history shows more than version 5, or a failed row, stop and fix that first: these drills assume the Lab 7 end state.</p>
+<p>Set up one shell with helper variables. Use it for every drill. Run in: <strong>Terminal</strong>.</p>
+<pre><code class="language-bash">export CLONE_DB=SBX_DEV_DRILL8
+export PROJECT=&quot;$CLONE_DB.CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+dplan()   { snow dcm plan   &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine -D &quot;calc_db='$CLONE_DB'&quot; -D &quot;fin_db='$CLONE_DB'&quot; -c sbx_dev --role SBX_CALC_DEV --save-output &quot;$@&quot;; }
+ddeploy() { snow dcm deploy &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine -D &quot;calc_db='$CLONE_DB'&quot; -D &quot;fin_db='$CLONE_DB'&quot; -c sbx_dev --role SBX_CALC_DEV --save-output &quot;$@&quot;; }
+flyclone() { ( cd flyway &amp;&amp; set -a &amp;&amp; source .env.flyway &amp;&amp; set +a \
+    &amp;&amp; export FLYWAY_URL=&quot;${FLYWAY_URL/db=SBX_INT/db=$CLONE_DB}&quot; FLYWAY_PLACEHOLDERS_CALC_DB=&quot;$CLONE_DB&quot; \
+    &amp;&amp; flyway &quot;$@&quot; ); }
+</code></pre>
+<p><code>flyclone</code> runs Flyway against the drill clone by rewriting only the database name in your local, git-ignored settings. Every Flyway command in this lab goes through it, so <code>SBX_INT</code> is never the target.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G04]:</strong> The file name <code>--save-output</code> writes under <code>dcm/calc_engine/out/</code>. This lab uses <code>ls dcm/calc_engine/out/</code> each time you need it. Record the result in file 13.</p>
+</blockquote>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>Drill.</strong> A rehearsed failure. You know in advance what will break so you can watch the mechanism instead of panicking.</p>
+<p><strong>Blast radius.</strong> How much a mistake can damage. Each drill states it. Clones keep the blast radius at "one throwaway database".</p>
+<p><strong>Fail forward.</strong> After a Flyway migration was applied, you never edit it. You add a new migration that fixes the result.</p>
+<p><strong>Fail closed.</strong> A check that cannot decide treats the situation as a failure, as <code>check_plan_for_drops.py</code> does when the plan file looks wrong.</p>
+<p><strong>Idempotent recovery.</strong> A recovery step that is safe to repeat. DEPLOY after a partial failure is the DCM example.</p>
+<p><strong>Time Travel and retention.</strong> Snowflake can keep old data for a number of days so you can query or restore the past. Clone databases in this pack are created with <code>DATA_RETENTION_TIME_IN_DAYS = 0</code>, so a table dropped in a clone cannot be restored. That is deliberate (it saves storage) and it matters in drill 3.</p>
+<h3 id="41-drill-map">4.1 Drill map</h3>
+<pre><code> Flyway lane              DCM lane                      Identity and cost
+ 1 failed half-way        3 deleted definition (DROP)   8 wrong or expired key
+ 2 edited applied file    4 hand edit (drift)           9 cost runaway
+                          5 wrong target
+                          6 stale plan
+ both lanes + clones: 7 clone leakage
+</code></pre>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-51-create-the-drill-clone">Step 5.1 Create the drill clone</h3>
+<p>Run in: <strong>Terminal</strong>. This runs the five-step script from Lab 5: drop any old clone, create it, create its DCM project, plan, deploy, re-plan.</p>
+<pre><code class="language-bash">SNOW_CONNECTION=sbx_dev scripts/refresh_dev_clone.sh DRILL8 --yes
+</code></pre>
+<p>You should see: the script ends with an empty re-plan ("No changes detected" or an empty <code>changeset</code>) and the clone <code>SBX_DEV_DRILL8</code> exists.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SHOW DATABASES LIKE 'SBX_DEV_DRILL8';
+</code></pre>
+<p>If you are in Mode D-off the script skips the DCM steps. Drills 3 to 7 then become read-along: read each "You should see" block and answer the questions without running the DCM commands.</p>
+<p>For drills 3 to 7 you will refresh the clone between drills so each starts from a clean state. A refresh is the same command as above. It drops the old clone and builds a new one, which is the point of throwaway environments.</p>
+<h3 id="drill-1-a-migration-fails-half-way">Drill 1: a migration fails half-way</h3>
+<p>Blast radius: the clone only. Lane: Flyway. This repeats Lab 2 on the main project.</p>
+<p>Run in: <strong>Terminal</strong>. Create the file <code>flyway/migrations/common/V99__drill_half_fail.sql</code>. Do not commit it. Delete it at the end of the drill.</p>
+<pre><code class="language-sql">CREATE TABLE DRILL_LEFTOVER (ID NUMBER);
+INSERT INTO DRILL_TABLE_THAT_DOES_NOT_EXIST VALUES (1);
+</code></pre>
+<p>Check what Flyway sees, then migrate the clone:</p>
+<pre><code class="language-bash">flyclone info
+flyclone migrate
+flyclone info
+</code></pre>
+<p>You should see: <code>info</code> lists version 99 as <code>Pending</code>. <code>migrate</code> stops with an error on the second statement (the table does not exist). The second <code>info</code> shows version 99 as <code>Failed</code>.</p>
+<p><strong>Symptom.</strong> <code>migrate</code> ends with an error and every later <code>migrate</code> refuses to run.</p>
+<p><strong>Diagnosis.</strong> Run in a <strong>Snowsight worksheet</strong> (role <code>SBX_CALC_DEV</code>):</p>
+<pre><code class="language-sql">SHOW TABLES LIKE 'DRILL_LEFTOVER' IN SCHEMA SBX_DEV_DRILL8.CALC_SUPPORT;                    -- 1 row: the first statement stayed
+SELECT * FROM SBX_DEV_DRILL8.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT ORDER BY 1 DESC LIMIT 3;   -- version 99, success = false
+</code></pre>
+<p>Snowflake commits DDL as soon as it runs, so Flyway cannot roll the file back. The first statement stayed. The history row says the migration failed.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> Snowflake commits DDL immediately, so a migration that fails part-way leaves the earlier statements applied; clean them up by hand (https://documentation.red-gate.com/flyway/reference/database-driver-reference/snowflake, read 2026-11-16). <code>repair</code> removes failed entries from the history and leaves any objects behind to be cleaned manually, and it must be given the same locations as <code>migrate</code> (https://documentation.red-gate.com/flyway/reference/commands, read 2026-11-16). Undo migrations need the paid Teams edition and, per the docs, do not help with failed versioned migrations on databases without DDL transactions.</p>
+</blockquote>
+<p><strong>Recovery.</strong> Three actions, in this order.</p>
+<pre><code class="language-sql">DROP TABLE SBX_DEV_DRILL8.CALC_SUPPORT.DRILL_LEFTOVER;       -- 1. clean the objects the failed file left
+</code></pre>
+<pre><code class="language-bash">flyclone repair                                              # 2. remove the failed history row
+# 3. fix the never-applied file: replace the second statement with
+#    INSERT INTO DRILL_LEFTOVER VALUES (1);
+flyclone migrate
+</code></pre>
+<p>You should see: version 99 is now <code>Success</code>. Because the failed version never ran fully, correcting its file is allowed. A version that was applied successfully is never edited (drill 2).</p>
+<p><strong>Lesson.</strong> Keep DDL migrations small, one idea per file, so a failure leaves at most one thing to clean. Flyway's job ends at recording the failure. The cleanup is human work. NAIC's design says exactly this: "keep DDL migrations small because Snowflake DDL commits independently".</p>
+<p>Cleanup: delete <code>V99__drill_half_fail.sql</code> from <code>flyway/migrations/common/</code>. The clone still has the version 99 row, so refresh the clone before the next drill (step 5.1 command).</p>
+<h3 id="drill-2-an-applied-migration-was-edited">Drill 2: an applied migration was edited</h3>
+<p>Blast radius: the clone. Lane: Flyway.</p>
+<p>Run in: <strong>Terminal</strong>. Open <code>flyway/migrations/common/V3__data_fix_default_calc_status.sql</code> and add one comment line at the bottom, for example <code>-- harmless note</code>. Save it.</p>
+<pre><code class="language-bash">flyclone validate
+</code></pre>
+<p>You should see: <code>validate</code> fails and reports that the checksum of version 3 differs between the file and the database.</p>
+<p><strong>Symptom.</strong> <code>validate</code> (and therefore <code>migrate</code>, because <code>validateOnMigrate = true</code>) refuses to run.</p>
+<p><strong>Diagnosis.</strong> Flyway stores a checksum of every applied file. Even a comment changes it. The file on disk no longer matches what ran.</p>
+<p><strong>Recovery, the right way.</strong> Undo your edit in the editor. If you need the change itself, add a new migration <code>V6__...</code> that does it. Run <code>flyclone validate</code> again: it passes.</p>
+<p><strong>Recovery, the dangerous way (read it, then do it once in the clone).</strong></p>
+<pre><code class="language-bash">flyclone repair
+flyclone validate        # now passes with your edited file
+</code></pre>
+<p>You should see: <code>repair</code> realigns the stored checksum to the edited file. Nothing re-ran. The database still holds the result of the old text. Now the history says the edited text ran when it did not. Undo the edit in the editor and run <code>flyclone repair</code> once more to restore the original checksum.</p>
+<p><strong>Lesson.</strong> <code>repair</code> makes the history agree with the files. It does not make the database agree with either. Treat it as a controlled act with approval, which is exactly why NAIC's design forbids automatic repair. (fpr-admin's dev profile sets <code>repair-on-migrate=true</code> and <code>validate-on-migrate=false</code>, and the contrast is the lesson.)</p>
+<h3 id="drill-3-a-deleted-definition-dcm-drops-the-object">Drill 3: a deleted definition (DCM drops the object)</h3>
+<p>Blast radius: the clone. Lane: DCM. Mode D only.</p>
+<p>Refresh the clone (step 5.1 command), then count the rows you are about to lose.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CALC_DEV</code>):</p>
+<pre><code class="language-sql">SELECT COUNT(*) FROM SBX_DEV_DRILL8.CALC_SUPPORT.CALC_CATEGORIES;   -- 2 rows: RATIO, TOTAL
+</code></pre>
+<p>Run in: <strong>Terminal</strong>. Delete the definition file <code>dcm/calc_engine/sources/definitions/tables/CALC_CATEGORIES.sql</code> (use <code>FORMULA_CATEGORIES.sql</code> if Lab 4 is unfinished). Open <code>dcm/calc_engine/sources/definitions/grants/access.sql</code> and remove the lines that grant on that table. A developer who really wanted the table gone would do both.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-10-03]:</strong> What the plan does if you delete only the definition and leave the <code>GRANT</code> on that table. Try it first if you are curious and write down the result. The pack does not predict it: DCM may fail the plan or treat the object as external. Record the result in file 13.</p>
+</blockquote>
+<pre><code class="language-bash">dplan
+python3 scripts/check_plan_for_drops.py dcm/calc_engine/out/plan*.json
+echo &quot;exit code: $?&quot;
+</code></pre>
+<p>You should see: the plan has one <code>DROP</code> for the table, <code>check_plan_for_drops.py</code> prints <code>drops: 1</code> with the table name and exits <code>1</code>.</p>
+<p><strong>Symptom.</strong> None, if nobody reads the plan. The deploy just succeeds.</p>
+<p>Now do the thing the check exists to prevent, in the clone only:</p>
+<pre><code class="language-bash">ddeploy
+</code></pre>
+<pre><code class="language-sql">SELECT COUNT(*) FROM SBX_DEV_DRILL8.CALC_SUPPORT.CALC_CATEGORIES;   -- error: object does not exist
+UNDROP TABLE SBX_DEV_DRILL8.CALC_SUPPORT.CALC_CATEGORIES;            -- fails: the clone has retention 0
+</code></pre>
+<p>You should see: the table and its two rows are gone, and <code>UNDROP</code> fails because clones are created with <code>DATA_RETENTION_TIME_IN_DAYS = 0</code>.</p>
+<p><strong>Diagnosis.</strong> DEPLOY drops objects that are managed by the project but no longer defined. The docs warn: "always run and review PLAN before DEPLOY".</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> Removing a <code>DEFINE</code> and deploying drops the object, and removing a <code>GRANT</code> revokes it (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage, read 2026-11-16). The sample CI workflow in the docs blocks DROP of databases, schemas, tables and stages by reading the saved plan.</p>
+</blockquote>
+<p><strong>Recovery.</strong> In the clone: put the definition and the grant lines back, refresh the clone. In a real environment: restore from Time Travel (not available for hybrid tables, which also cannot be <code>UNDROP</code>ped) or from a backup, then re-add the definition. If you only wanted DCM to stop managing a table, do not delete the definition. Use the unmanage function, then remove the definition:</p>
+<pre><code class="language-sql">SELECT SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT('SBX_DEV_DRILL8.CALC_SUPPORT.CALC_ENGINE_DCM', 'TABLE', 'SBX_DEV_DRILL8.CALC_SUPPORT.CALC_CATEGORIES');
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-10-01]:</strong> The exact argument spelling of <code>SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT</code> (project, entity type, fully qualified name). The docs show the form with <code>'DYNAMIC TABLE'</code> as the type. How to check at lab time: the manage page of the DCM docs. Do not run this line against anything you care about. Record the result in file 13.</p>
+</blockquote>
+<p><strong>Lesson.</strong> The plan is the only moment the drop is visible. In NAIC the exact fully qualified name of every approved drop is listed in an approval file, with no wildcards, and an unused approval also fails.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Read-along: a hand-run equivalent is <code>DROP TABLE SBX_DEV_DRILL8.CALC_SUPPORT.CALC_CATEGORIES;</code>. With no tool there is no plan and no check. Compare in your notes.</p>
+<h3 id="drill-4-an-out-of-band-change-drift">Drill 4: an out-of-band change (drift)</h3>
+<p>Blast radius: the clone. Lane: DCM, and what Flyway cannot see.</p>
+<p>Restore the file and grant lines from drill 3 (editor), then refresh the clone (step 5.1 command).</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CALC_DEV</code>, which owns the clone's objects):</p>
+<pre><code class="language-sql">ALTER TABLE SBX_DEV_DRILL8.CALC_SUPPORT.EXECUTIONS ADD COLUMN DRIFT_NOTE VARCHAR;
+UPDATE SBX_DEV_DRILL8.CALC_SUPPORT.EXECUTIONS SET DRIFT_NOTE = 'edited by hand' WHERE 1 = 0;   -- touches no rows, but the column exists
+CREATE OR REPLACE PROCEDURE SBX_DEV_DRILL8.CALC_SUPPORT.SP_ADD_CATEGORY(P_CATEGORY_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS $$ BEGIN RETURN 'HAND_EDITED'; END $$;
+</code></pre>
+<p><strong>Symptom.</strong> Nothing. Nothing complains. Everything still runs.</p>
+<p><strong>Diagnosis.</strong> Three ways to look, in order of how much they see.</p>
+<pre><code class="language-bash">dplan --delta     # looks only at changed definitions and what depends on them
+dplan             # full plan against the live state
+flyclone validate # Flyway's view
+</code></pre>
+<p>You should see:</p>
+<ul>
+<li>The <code>--delta</code> plan shows <strong>no changes</strong>. You did not edit any definition, so a delta plan has nothing to compare.</li>
+<li>The full plan shows changes: the procedure body is replaced back to the definition, and the extra column is reconciled. Read the <code>changes[]</code> of the <code>EXECUTIONS</code> entry and check whether the column <code>DRIFT_NOTE</code> is removed. If it is, DCM would delete a column and its data to make the object match the definition.</li>
+<li><code>validate</code> passes. Flyway knows only its history table.</li>
+<li>The grants of the procedure may also show as a change, because <code>CREATE OR REPLACE</code> drops grants.</li>
+</ul>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>PLAN DELTA</code> does not detect drift. It evaluates only changed definitions and what depends on them, so always run a full plan before deploy. A plan against the current account state shows changes made outside DCM, and a redeploy restores the definitions (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16). Flyway Community has no drift check; drift reports are Enterprise (https://documentation.red-gate.com/fd/feature-summary-165740620.html, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-10-04]:</strong> What the plan does with an extra column that is not in the definition (the docs say <code>DEFINE</code> follows <code>CREATE OR ALTER</code> rules, which suggests the column is dropped). How to check at lab time: read the <code>changes[]</code> of the table entry. Record the result in file 13.</p>
+</blockquote>
+<p>Also run the hand-made detective from Lab 1 (<code>sql/lab1/drift_detective.sql</code>) against the clone to see that a tool and a query find the same thing, and that only the tool can also repair it.</p>
+<p><strong>Recovery.</strong> <code>ddeploy</code>, then <code>dplan</code> must show an empty change set. The hand edit is gone. In PROD this is why NAIC's rule is "no hand edits": the next deploy reverts them.</p>
+<p><strong>Lesson.</strong> Drift detection exists only for what DCM owns. Flyway-owned hybrid tables, and grants applied by Flyway, are not checked by anything. A shape check (Lab 7, step 5.7) is the manual substitute.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off_1">If DCM is not available (Mode D-off)</h4>
+<p>Read-along: only the Lab 1 detective query finds this, and only if someone runs it.</p>
+<h3 id="drill-5-the-wrong-target">Drill 5: the wrong target</h3>
+<p>Blast radius: none. Plans never run DDL. Lane: DCM. Mode D only.</p>
+<p>Refresh the clone if you ran <code>ddeploy</code> after changing definitions. Then try two common mistakes.</p>
+<p><strong>Variant A: forget the database override.</strong></p>
+<pre><code class="language-bash">snow dcm plan &quot;$PROJECT&quot; --target CLONE --from dcm/calc_engine -c sbx_dev --role SBX_CALC_DEV
+</code></pre>
+<p>You should see: the plan fails, because the CLONE configuration renders the database name as <code>SBX_DEV_SET_ON_CLI</code>, which does not exist.</p>
+<p><strong>Symptom.</strong> An error that mentions a missing database or an object that cannot be found.</p>
+<p><strong>Diagnosis.</strong> The manifest is not rendered, so a project name cannot take a ticket. The CLONE target therefore carries a placeholder database that never exists. Forgetting <code>-D</code> fails loudly. If the placeholder were <code>SBX_INT</code>, forgetting <code>-D</code> would aim a clone job at INT.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-10-05]:</strong> The exact error text. The pack does not assert it. Record it in file 13.</p>
+</blockquote>
+<p><strong>Variant B: forget <code>--target</code>, plan only, never deploy.</strong></p>
+<pre><code class="language-bash">snow dcm plan &quot;$PROJECT&quot; --from dcm/calc_engine -c sbx_dev --role SBX_CALC_DEV --save-output
+python3 scripts/check_plan_for_drops.py dcm/calc_engine/out/plan*.json
+</code></pre>
+<p>Without <code>--target</code>, the CLI uses the manifest's <code>default_target</code>, which is <code>INT</code>. That renders the INT names against the clone's project object.</p>
+<p>You should see one of two outcomes, both safe: an error, or a large plan that wants to create <code>SBX_INT</code> objects and drop the clone's objects. If it is a plan, <code>check_plan_for_drops.py</code> prints many drops and exits <code>1</code>.</p>
+<p><strong>Recovery.</strong> Run the right command. Never deploy a plan you did not mean to run.</p>
+<p><strong>Lesson.</strong> Targets do not choose the connection, account or role. They only choose a project name and a template set. Two safety layers cover the mistakes: a placeholder that cannot exist, and a drop check that fails closed.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> The CLI resolves the project from an explicit identifier, then <code>--target</code>, then <code>default_target</code>; targets do not select the connection, account or role (https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16).</p>
+</blockquote>
+<h3 id="drill-6-a-stale-plan">Drill 6: a stale plan</h3>
+<p>Blast radius: the clone. Lane: DCM. Mode D only.</p>
+<p>Refresh the clone. The idea: a plan you reviewed is not what DEPLOY runs. DEPLOY always recomputes.</p>
+<ol>
+<li>Make one reviewed change. In <code>dcm/calc_engine/sources/definitions/procedures/SP_ADD_CATEGORY.sql</code> add a comment line inside the body (a comment above <code>DEFINE</code> may not register as a change; put it inside).</li>
+<li>Plan and save a copy:</li>
+</ol>
+<pre><code class="language-bash">dplan
+ls dcm/calc_engine/out/
+cp dcm/calc_engine/out/plan*.json &quot;$TMPDIR/reviewed_plan.json&quot;
+python3 -c &quot;import json,sys; p=json.load(open(sys.argv[1])); print(len(p['changeset']), 'change(s) reviewed')&quot; &quot;$TMPDIR/reviewed_plan.json&quot;
+</code></pre>
+<p>You should see: one change (the procedure).</p>
+<ol start="3">
+<li>After you reviewed it, someone else changes the clone. Run in a <strong>Snowsight worksheet</strong>:</li>
+</ol>
+<pre><code class="language-sql">ALTER TABLE SBX_DEV_DRILL8.CALC_SUPPORT.EXECUTIONS ADD COLUMN STALE_TEST VARCHAR;
+</code></pre>
+<ol start="4">
+<li>Deploy without re-planning:</li>
+</ol>
+<pre><code class="language-bash">ddeploy
+ls dcm/calc_engine/out/
+python3 -c &quot;import json,glob; p=json.load(open(glob.glob('dcm/calc_engine/out/deploy*.json')[0])); print(len(p['changeset']), 'change(s) deployed')&quot;
+</code></pre>
+<p>You should see: more than one change deployed. The table was also altered, although your reviewed plan did not mention it.</p>
+<p><strong>Symptom.</strong> A deploy that did more than anyone approved.</p>
+<p><strong>Diagnosis.</strong> DEPLOY first runs its own internal compile and plan, then applies it. The saved plan from step 2 is only feedback.</p>
+<p><strong>Recovery.</strong> Run <code>dplan</code> again right before deploying and compare it with the reviewed plan. A pipeline can do the comparison: fail if the set of (type, fqn) entries differs. NAIC's contract is "a fresh full plan immediately before every deploy; reject stale or failed plans; exact-FQN drop approval; deploy, then a fresh full re-plan must show no changes".</p>
+<p><strong>Lesson.</strong> Approving a plan file does not bind the deploy. What you approve has to be the thing that runs, and in DCM that means plan and deploy close together, with a machine check in between.</p>
+<h3 id="drill-7-clone-leakage">Drill 7: clone leakage</h3>
+<p>Blast radius: a few sandbox rows in <code>SBX_INT_FIN</code>, which you remove at the end. Lane: clone plus DCM. Mode D only.</p>
+<p>The rule from Lab 5: a clone must write only to itself. The mechanism is the redirect map in <code>ENV_CONFIG</code>. The CLONE configuration sets <code>clone_redirects: true</code>, so the map points INT names at the clone. In this drill you turn it off by mistake.</p>
+<p>Refresh the clone, then record the INT baseline. Run in a <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SELECT MAX(RESULT_ID) AS LAST_RESULT_ID, COUNT(*) AS RESULT_ROWS FROM SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE;
+SELECT COUNT(*) AS EXEC_ROWS FROM SBX_INT.CALC_SUPPORT.EXECUTIONS;
+</code></pre>
+<p>Write the three numbers down (the max may be NULL if the table is empty). Now redeploy the clone's <code>ENV_CONFIG</code> with redirects off. Run in: <strong>Terminal</strong>:</p>
+<pre><code class="language-bash">dplan -D &quot;clone_redirects=false&quot;      # expect one ALTER on the view ENV_CONFIG
+ddeploy -D &quot;clone_redirects=false&quot;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-10-06]:</strong> The quoting form for a boolean runtime variable (<code>-D "clone_redirects=false"</code>). The docs show quoted strings and bracketed lists. How to check at lab time: the plan should show the changed view. If it errors, try <code>-D "clone_redirects='false'"</code> only if your template compares to a string, and record which worked. Record the result in file 13.</p>
+</blockquote>
+<p>Run the harmless sandbox compute procedure inside the clone, as the clone's developer role. Run in a <strong>Snowsight worksheet</strong> (role <code>SBX_CALC_DEV</code>):</p>
+<pre><code class="language-sql">CALL SBX_DEV_DRILL8.CALC_SUPPORT.SP_COMPUTE_MINI_RESULT(2001, OBJECT_CONSTRUCT('note', 'drill 7'));
+</code></pre>
+<p>You should see first: an <strong>insufficient privileges error</strong>. The procedure runs as its owner, <code>SBX_CALC_DEV</code>, and that role has only <code>SELECT</code> on the source results table (bootstrap grant 6). Privileges stopped the leak. That is a second safety layer, and it is not guaranteed in every environment. To see the leak itself, simulate a developer role that also holds write rights on the source results, then repeat the call. Run in a <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">GRANT INSERT ON TABLE SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE TO ROLE SBX_CALC_DEV;   -- simulation only; revoked in the recovery step
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-10-08]:</strong> That <code>SBX_CICD_PIPELINE</code> owns <code>FIN_CALCULATION_RESULT_BASE</code> and can grant on it. The bootstrap creates it, and the owner may be another role. How to check at lab time: <code>SHOW GRANTS ON TABLE SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE;</code>. If the grant fails, run it once with the <code>sbx_admin</code> connection. Record the result in file 13.</p>
+</blockquote>
+<p>Then run the <code>CALL</code> again as <code>SBX_CALC_DEV</code>.</p>
+<blockquote>
+<p><strong>Reminder.</strong> <code>SP_COMPUTE_MINI_RESULT</code> exists only in your sandbox and writes one harmless row. On NAIC, the "never run calculations" rule is absolute and you never do anything like this.</p>
+</blockquote>
+<p>Compare INT with your baseline (the same two queries as above).</p>
+<p>You should see: <code>RESULT_ROWS</code> in <code>SBX_INT_FIN</code> went up by 1. The clone ran, and the rows landed in the source. (<code>EXEC_ROWS</code> may or may not change, depending on whether the procedure qualifies the executions table; either way the result table proves the leak.)</p>
+<p><strong>Symptom.</strong> None in the clone. The clone's own tables look normal.</p>
+<p><strong>Diagnosis.</strong> The only detection is a comparison of the source before and after, which is the zero-writes assertion the pull request pipeline runs (step 11 in file 08). <code>QUERY_HISTORY</code> would show DML statements against <code>SBX_INT_FIN</code>.</p>
+<p><strong>Recovery.</strong> Remove the leaked rows as the owner. Run in a <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>), using the <code>LAST_RESULT_ID</code> you noted:</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE WHERE RESULT_ID &gt; &lt;LAST_RESULT_ID&gt;;
+</code></pre>
+<p>If the table was empty before, use <code>WHERE 1 = 1</code> instead (only in the sandbox, only if you noted it was empty). Take back the simulated grant: <code>REVOKE INSERT ON TABLE SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE FROM ROLE SBX_CALC_DEV;</code>. Then redeploy with redirects on (<code>ddeploy</code> without the override) or refresh the clone.</p>
+<p><strong>Lesson.</strong> The NAIC team rejected passing redirect JSON on the command line because forgetting it silently turned redirects off. Their design derives the redirects from the database name inside the CLONE template so they cannot be forgotten, and still keeps the before and after assertion, because a guard that only checks the home schema, not the map, can pass while the map is wrong.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off_2">If DCM is not available (Mode D-off)</h4>
+<p>Read-along. Without DCM you rewrite names by hand in the clone, and a missed name is the same leak. The assertion is still your only detector.</p>
+<h3 id="drill-8-expired-or-wrong-credentials">Drill 8: expired or wrong credentials</h3>
+<p>Blast radius: none. You do not change anything in Snowflake. You present a key Snowflake has never seen. Lane: identity.</p>
+<p>Run in: <strong>Terminal</strong>. Make a throwaway key pair that is registered nowhere. It stands in for "the key in the CI secret no longer matches the key on the user".</p>
+<pre><code class="language-bash">mkdir -p ~/.snowflake-sandbox/keys
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake-sandbox/keys/drill_wrong_key.p8 -nocrypt
+snow connection test -x --user SBX_SVC_CICD --account &lt;ACCOUNT_IDENTIFIER&gt; --authenticator SNOWFLAKE_JWT --private-key-file ~/.snowflake-sandbox/keys/drill_wrong_key.p8
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> The unencrypted key command (<code>openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt</code>) and the connection options <code>--user</code>, <code>--account</code>, <code>--authenticator</code>, <code>--private-key-file</code> (https://docs.snowflake.com/en/user-guide/key-pair-auth and .../snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16). The throwaway key is unencrypted on purpose because it protects nothing. Never do this for a real key.</p>
+</blockquote>
+<p>You should see: the test fails with <code>JWT token is invalid.</code> followed by an identifier in brackets (a UUID) and the vendor code 390144.</p>
+<p><strong>Symptom.</strong> Every Snowflake call from CI or the laptop fails at login. Nothing about SQL, grants or objects is mentioned.</p>
+<p><strong>Diagnosis.</strong> 390144 is the general wrapper. The detailed reason is on Snowflake's side and only an administrator can read it. Copy the UUID from the message. Run in a <strong>Snowsight worksheet</strong> (role <code>ACCOUNTADMIN</code>, connection <code>sbx_admin</code>):</p>
+<pre><code class="language-sql">SELECT JSON_EXTRACT_PATH_TEXT(SYSTEM$GET_LOGIN_FAILURE_DETAILS('&lt;UUID_FROM_THE_ERROR&gt;'), 'errorCode');
+DESC USER SBX_SVC_CICD;     -- read RSA_PUBLIC_KEY_FP, the fingerprint of the key that is registered
+</code></pre>
+<p>You should see: a more specific code. The documented table:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>394300</td>
+<td>the user in the token does not exist (use the user's <code>LOGIN_NAME</code>, not its name)</td>
+</tr>
+<tr>
+<td>394301</td>
+<td>token missing an issue or expiry time</td>
+</tr>
+<tr>
+<td>394302</td>
+<td>token issued more than 60 seconds ago (clock skew or latency)</td>
+</tr>
+<tr>
+<td>394303</td>
+<td>token expired</td>
+</tr>
+<tr>
+<td>394304</td>
+<td>public key fingerprint does not match the registered key</td>
+</tr>
+<tr>
+<td>394305</td>
+<td>token not signed with RS256</td>
+</tr>
+<tr>
+<td>394306</td>
+<td>signature invalid (private key does not match the registered public key)</td>
+</tr>
+<tr>
+<td>394307</td>
+<td>account in the token does not match</td>
+</tr>
+</tbody>
+</table>
+<p>For this drill the likely answer is a fingerprint or signature mismatch (394304 or 394306).</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> The JWT error table and the use of <code>SYSTEM$GET_LOGIN_FAILURE_DETAILS</code> by an administrator (https://docs.snowflake.com/en/user-guide/key-pair-auth-troubleshooting, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-10-02]:</strong> Which specific code your wrong-key attempt returns, and how long the login-failure details stay available. How to check at lab time: run the query within a few minutes of the failure. NAIC's own notes mention 390144 only in passing, and the public table says an expired token is 394303, so what NAIC saw as "expired key" may be a different code. Record the result in file 13.</p>
+</blockquote>
+<p><strong>Recovery.</strong> In a real incident the matching steps are:</p>
+<ol>
+<li>Compare the fingerprint of the key in the CI secret with <code>RSA_PUBLIC_KEY_FP</code>. Compute the local value with the command from the docs: <code>openssl rsa -pubin -in &lt;public key file&gt; -outform DER | openssl dgst -sha256 -binary | openssl enc -base64</code>.</li>
+<li>Check the clock (<code>394302</code>), the account identifier (<code>394307</code>) and the user's login name (<code>394300</code>).</li>
+<li>If the key must be replaced, register the new public key in the second slot, switch CI, test, then remove the old one. Slots are <code>RSA_PUBLIC_KEY</code> and <code>RSA_PUBLIC_KEY_2</code>:</li>
+</ol>
+<pre><code class="language-sql">ALTER USER SBX_SVC_CICD SET RSA_PUBLIC_KEY_2 = '&lt;NEW_PUBLIC_KEY_BODY&gt;';     -- both keys work now
+-- update the GitHub secret SNOWFLAKE_PRIVATE_KEY_RAW, run a workflow, then:
+ALTER USER SBX_SVC_CICD UNSET RSA_PUBLIC_KEY;                                -- retire the old key
+</code></pre>
+<p>Do not run step 3 unless you really want to rotate the sandbox key. If you do, the named form <code>ALTER USER ... ROTATE KEY PAIR</code> also exists, with the old key valid for 24 hours by default.</p>
+<p>Remove the throwaway key: <code>rm ~/.snowflake-sandbox/keys/drill_wrong_key.p8</code>.</p>
+<p><strong>Lesson.</strong> A login failure looks the same for every cause until an administrator reads the detail. Know the three most common causes (wrong key, clock skew, wrong identifier). The cure for secret rotation is two key slots, so there is no moment with no valid key. NAIC's target removes the stored key by federation, which turns this drill into "check the trust subject" instead.</p>
+<h3 id="drill-9-a-cost-runaway">Drill 9: a cost runaway</h3>
+<p>Blast radius: a few hundredths of a credit on a throwaway warehouse. Lane: cost. Role: <code>ACCOUNTADMIN</code>, the only role that can create resource monitors. Use connection <code>sbx_admin</code> for this drill only.</p>
+<p>Do not use <code>SBX_CALC_WH</code> or <code>SBX_CALC_RM</code> for the experiment. A monitor that suspends your working warehouse would stop the rest of the pack. Use a separate warehouse and monitor. These two names are new to this lab: <code>SBX_DRILL_WH</code> and <code>SBX_DRILL_RM</code>.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>ACCOUNTADMIN</code>):</p>
+<pre><code class="language-sql">USE ROLE ACCOUNTADMIN;
+CREATE WAREHOUSE SBX_DRILL_WH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+CREATE RESOURCE MONITOR SBX_DRILL_RM WITH CREDIT_QUOTA = 0.05
+  FREQUENCY = MONTHLY START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 50 PERCENT DO NOTIFY
+           ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+ALTER WAREHOUSE SBX_DRILL_WH SET RESOURCE_MONITOR = SBX_DRILL_RM;
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>CREATE RESOURCE MONITOR ... WITH CREDIT_QUOTA ... FREQUENCY ... START_TIMESTAMP ... TRIGGERS ON &lt;n&gt; PERCENT DO { SUSPEND | SUSPEND_IMMEDIATE | NOTIFY }</code>; only <code>ACCOUNTADMIN</code> can create one; assign it with <code>ALTER WAREHOUSE ... SET RESOURCE_MONITOR</code>; <code>SUSPEND</code> waits for running queries, <code>SUSPEND_IMMEDIATE</code> cancels them (https://docs.snowflake.com/en/sql-reference/sql/create-resource-monitor, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-10-07]:</strong> A fractional <code>CREDIT_QUOTA</code> such as <code>0.05</code>, the function <code>SYSTEM$WAIT(&lt;seconds&gt;)</code> used below, and how soon after the credits are used a monitor acts. The docs say the quota is a number. Usage is tracked, not instantly: wait several minutes before you decide that nothing happened. How to check at lab time: run it and look at <code>SHOW RESOURCE MONITORS</code>. Record the result in file 13.</p>
+</blockquote>
+<p>Burn a few cents of credit on purpose. An X-Small warehouse uses roughly one credit per hour while running, so five minutes is about 0.08 credits, above the 0.05 quota. Run:</p>
+<pre><code class="language-sql">USE WAREHOUSE SBX_DRILL_WH;
+CALL SYSTEM$WAIT(300);
+SELECT 1;
+</code></pre>
+<p>You should see: the first call keeps the warehouse running for five minutes. Then check:</p>
+<pre><code class="language-sql">SHOW RESOURCE MONITORS LIKE 'SBX_DRILL_RM';     -- used_credits and remaining_credits, level of the last trigger
+SHOW WAREHOUSES LIKE 'SBX_DRILL_WH';             -- state: SUSPENDED (by auto-suspend) or by the monitor
+</code></pre>
+<p>If the monitor fired, a later <code>USE WAREHOUSE SBX_DRILL_WH; SELECT 1;</code> fails or the warehouse refuses to resume. If it has not fired after about 15 minutes, move on, do the cleanup, and look at the monitor again later.</p>
+<p><strong>Symptom.</strong> A warehouse that is suddenly suspended, or a bill that grew while nobody was working.</p>
+<p><strong>Diagnosis.</strong> <code>SHOW RESOURCE MONITORS</code> shows used credits and the percentage reached. <code>SHOW WAREHOUSES</code> shows the state. Account usage views show history, with a delay of some hours (TC-10-07).</p>
+<p><strong>Recovery.</strong> Raise the quota or wait for the next period: <code>ALTER RESOURCE MONITOR SBX_DRILL_RM SET CREDIT_QUOTA = 1;</code>. For your real sandbox monitor use the same statement on <code>SBX_CALC_RM</code> only if it ever triggers, and only after you understand why.</p>
+<p><strong>Lesson.</strong> A monitor is a brake, not a gauge. Warehouse-level monitors do not cap serverless or cloud-services credits. The causes of real runaway in this pack are small and listed: a warehouse with a long auto-suspend, a pipeline that loops, clones that nobody drops (clones cost almost nothing until data diverges), and a trial that runs out of credits. The quota of 20 credits in <code>SBX_CALC_RM</code> is the pack's choice, not a Snowflake default.</p>
+<p>Cleanup for the drill (run as <code>ACCOUNTADMIN</code>):</p>
+<pre><code class="language-sql">DROP WAREHOUSE IF EXISTS SBX_DRILL_WH;
+DROP RESOURCE MONITOR IF EXISTS SBX_DRILL_RM;
+</code></pre>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Why does a Flyway migration that fails on its second statement leave its first statement behind?</li>
+<li>After <code>repair</code> removes a failed row, why is it allowed to edit the failed file, but not an applied one?</li>
+<li>What did <code>repair</code> change in drill 2, and what did it not change?</li>
+<li>What is the difference between a <code>--delta</code> plan and a full plan, and which one found the drift?</li>
+<li>Why does the CLONE target in the manifest name a database that does not exist?</li>
+<li>Why did the deploy in drill 6 do more than the reviewed plan said?</li>
+<li>Which two layers prevented, or would have detected, a clone leak in drill 7?</li>
+<li>A CI login fails with 390144. What do you do first?</li>
+<li>A monitor on <code>SBX_DRILL_WH</code> did not fire after five minutes. Give two reasons that are not "it is broken".</li>
+</ol>
+<p><strong>Answers</strong></p>
+<ol>
+<li>Snowflake commits DDL immediately. Flyway cannot wrap a file in a transaction that rolls back DDL.</li>
+<li>A failed version never completed, so no result depends on its text. An applied version has a stored checksum and its result exists in the database. Editing it makes the history lie.</li>
+<li>It realigned the stored checksum to the edited file. It did not re-run the file or change any object.</li>
+<li>A delta plan checks only changed definitions and what depends on them. A full plan compares every definition with live state. The full plan found the drift.</li>
+<li>So that forgetting the command-line override fails instead of aiming the job at a real database such as INT.</li>
+<li>DEPLOY recomputes its own plan against the live state, which now included a change made after the review.</li>
+<li>Privileges (the developer role could not write to the source results until you granted it), and the before and after count comparison.</li>
+<li>Ask an administrator for the detailed code with the UUID (<code>SYSTEM$GET_LOGIN_FAILURE_DETAILS</code>) and compare key fingerprints, clock, account and login name.</li>
+<li>Usage is tracked with a delay, and a fractional quota may behave differently from what you assumed (TC-10-07). The warehouse might also have auto-suspended before usage was counted. Check again later.</li>
+</ol>
+<h2 id="7-break-it">7. Break it</h2>
+<p><strong>Two failures in one pull request.</strong> Only if you finished Lab 6.</p>
+<ol>
+<li>Create a branch <code>feature/LAB8A</code> and, in the same commit, edit the comment of the applied <code>V3</code> migration and delete a definition file.</li>
+<li>Open a pull request.</li>
+<li>Symptom: two checks fail for different reasons. <code>validate</code> fails in the <code>flyway-validate</code> job (checksum mismatch). <code>pr-clone-check</code> fails at the plan step on the DROP, and the <code>cleanup</code> job still removes the clone.</li>
+<li>Diagnosis: read the failing step name of each job. A failure in a different lane needs its own fix.</li>
+<li>Recovery: revert the V3 edit, restore the definition, push. Both go green.</li>
+</ol>
+<p>Lesson: lanes fail independently, and the pipeline reports them separately. You fix one, you do not assume the other is fine.</p>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<p>Per-drill limitations are in the drill sections. The consolidated table below is the product of the lab. Fill the right-hand notes from what you saw.</p>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>No tooling (hand-run SQL)</th>
+<th>Flyway only (Community)</th>
+<th>DCM only</th>
+<th>Both, with a pipeline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Preview before change</td>
+<td>None. You read the SQL.</td>
+<td>None. <code>info</code> lists pending files only. No dry run in Community (Teams has one).</td>
+<td>Full <code>PLAN</code> with a change list.</td>
+<td>Plan for DCM objects; Flyway pending list; pipeline shows both.</td>
+</tr>
+<tr>
+<td>Drift detection</td>
+<td>Only a hand-made query (Lab 1 detective)</td>
+<td>None in Community. Drift check is Enterprise.</td>
+<td>Full plan shows changes made by hand. Delta plan does not.</td>
+<td>DCM objects only. Flyway-owned objects have no detector.</td>
+</tr>
+<tr>
+<td>Who changed what, when</td>
+<td>Query history, with limited retention</td>
+<td>History table: version, time, user, checksum</td>
+<td>Deployment history with alias and stored artifacts</td>
+<td>Both, plus Git history and pipeline logs</td>
+</tr>
+<tr>
+<td>Rollback</td>
+<td>None</td>
+<td>No undo in Community. Undo is Teams and does not repair half-failed DDL. Fix forward.</td>
+<td>Re-deploy an earlier deployment's definitions (<code>FROM DEPLOYMENT</code>). Restores definitions, not data.</td>
+<td>Same as each tool, plus Time Travel or backups for data. No universal rollback.</td>
+</tr>
+<tr>
+<td>Rename</td>
+<td>By hand, no record</td>
+<td>Explicit migration, clear</td>
+<td>Seen as drop plus create (TC-G06)</td>
+<td>Flyway rename first, then definition update</td>
+</tr>
+<tr>
+<td>Hybrid tables and indexes</td>
+<td>By hand</td>
+<td>Yes, as migrations</td>
+<td>Not supported</td>
+<td>Flyway lane</td>
+</tr>
+<tr>
+<td>Row data changes</td>
+<td>By hand, unlogged</td>
+<td>Yes, versioned, with assertions</td>
+<td>Not supported</td>
+<td>Flyway lane</td>
+</tr>
+<tr>
+<td>Procedures and functions</td>
+<td><code>CREATE OR REPLACE</code>, silent overwrite</td>
+<td>Repeatable <code>R__</code> files rerun whole when the checksum changes</td>
+<td>One definition per object, per-object diff</td>
+<td>DCM lane</td>
+</tr>
+<tr>
+<td>Grants</td>
+<td>By hand; lost on <code>CREATE OR REPLACE</code></td>
+<td>In migrations</td>
+<td>Declared, re-applied each deploy</td>
+<td>DCM for its objects, Flyway for hybrid tables</td>
+</tr>
+<tr>
+<td>Accidental drop protection</td>
+<td>None</td>
+<td>Flyway does not drop unknown objects. <code>clean</code> is disabled by default.</td>
+<td>None by itself. A deploy drops undefined objects.</td>
+<td>Drop check in the pipeline plus review</td>
+</tr>
+<tr>
+<td>Parallel developers</td>
+<td>They overwrite each other</td>
+<td>Version number collisions at merge</td>
+<td>One project object per developer or ticket</td>
+<td>Clone per ticket plus project per clone</td>
+</tr>
+<tr>
+<td>Test environment</td>
+<td>None, or INT itself</td>
+<td>Clone by hand</td>
+<td>Clone by hand</td>
+<td>Clone per pull request, created and dropped by the pipeline</td>
+</tr>
+<tr>
+<td>Learning curve</td>
+<td>Lowest</td>
+<td>Low</td>
+<td>Medium</td>
+<td>Highest</td>
+</tr>
+</tbody>
+</table>
+<p>Status of the claims: Flyway Community feature list and DCM plan/deploy semantics are VERIFIED against the docs (read 2026-11-16). <code>FROM DEPLOYMENT</code> is described in the DCM docs as re-planning or re-deploying a previous deployment's rendered definitions. Rename as drop plus create is TO-CONFIRM (TC-G06).</p>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>Every failure has a mechanism you can name: DDL auto-commit, checksums, undefined means dropped, delta plans do not see drift, deploy recomputes, placeholders that cannot exist, JWT detail codes, monitors with delay.</li>
+<li>Recovery is rarely automatic. Flyway records, DCM reconciles definitions, and neither restores data.</li>
+<li>Layers of safety overlap on purpose: privileges, drop checks, before and after counts, and a clone with no retention.</li>
+<li>Credential failures are diagnosed by an administrator reading the detail code.</li>
+<li>The consolidated table is your map for the capstone: each cell tells you what a way of working cannot do.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Terminal</strong> and <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('DRILL8');     -- as SBX_CICD_PIPELINE or SBX_CALC_DEV
+</code></pre>
+<p>Also: delete <code>flyway/migrations/common/V99__drill_half_fail.sql</code> if it still exists; revoke any simulated grant from drill 7; drop <code>SBX_DRILL_WH</code> and <code>SBX_DRILL_RM</code>; remove <code>drill_wrong_key.p8</code>; restore any definition or grant lines you removed.</p>
+<p>Verify <code>SBX_INT</code> is untouched: <code>git status</code> shows no changed tracked files you did not intend (you run git yourself), and <code>SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_CATEGORIES;</code> still returns 2.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p>Everything restored to the end state of Lab 7. The table of nine drills filled in by you. <code>SBX_CALC_RM</code> unchanged. If a drill touched <code>SBX_CALC_RM</code> (it should not), reset it with <code>ALTER RESOURCE MONITOR SBX_CALC_RM SET CREDIT_QUOTA = 20;</code> as <code>ACCOUNTADMIN</code>.</p>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G04, TC-G06, TC-10-01, TC-10-02, TC-10-03, TC-10-04, TC-10-05, TC-10-06, TC-10-07, TC-10-08, TC-08-08.</p>
+<p>Names new to this lab: warehouse <code>SBX_DRILL_WH</code>, resource monitor <code>SBX_DRILL_RM</code>, clone ticket <code>DRILL8</code>, migration file <code>V99__drill_half_fail.sql</code> (never committed).</p>
+<h2 id="13-next">13. Next</h2>
+<p>Go on to <a href="11-capstone-and-comparison.md">the capstone and comparison</a>.</p>
+<h3 id="drill-log-copy-and-fill-in">Drill log (copy and fill in)</h3>
+<table>
+<thead>
+<tr>
+<th>Drill</th>
+<th>Symptom you saw</th>
+<th>Diagnosis</th>
+<th>Recovery</th>
+<th>One-line lesson</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 failed half-way</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>2 edited applied file</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>3 deleted definition</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>4 hand edit</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>5 wrong target</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>6 stale plan</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>7 clone leakage</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>8 wrong credentials</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>9 cost runaway</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</body></html>

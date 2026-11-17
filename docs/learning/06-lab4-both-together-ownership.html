@@ -1,0 +1,678 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 4: DCM and Flyway together, one owner per object (file 06)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-4-dcm-and-flyway-together-one-owner-per-object-file-06">Lab 4: DCM and Flyway together, one owner per object (file 06)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 4 | <strong>File no:</strong> 06 | <strong>Time estimate:</strong> 2.5 to 3 h | <strong>Prerequisites:</strong> file 04 (Flyway fundamentals, Flyway installed) and file 05 (DCM project adopted, empty re-plan) | <strong>Modes supported:</strong> H or S (standard stand-ins), D (DCM parts become read-along in Mode D-off) | <strong>Leaves behind:</strong> Flyway history <code>FLYWAY_HISTORY_CALC_SUPPORT</code> at version 4, hybrid pair (Mode H) or stand-in tables (Mode S), a <code>DATA_CHANGE_LOG</code> ledger row for V3, <code>FORMULA_CATEGORIES</code> renamed to <code>CALC_CATEGORIES</code> with the DCM definition renamed and an empty re-plan, conflict experiment cleaned up, a written decision table</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>By the end of this lab you can:</p>
+<ol>
+<li>Split a database between DCM and Flyway so that every object has exactly one owner tool.</li>
+<li>Show that DCM and Flyway coexist in one schema without touching each other's objects.</li>
+<li>Run an idempotent data fix with a row-count assertion as a Flyway migration.</li>
+<li>Rename a table safely with the coordinated protocol, after first reading the unsafe DCM plan.</li>
+<li>Cause a two-owner conflict on purpose, watch the tools fight, and explain the cure.</li>
+<li>Say which tool to use for any given change, and in which order they run.</li>
+</ol>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world.</strong> The NAIC target architecture states the rule in one sentence: every runtime responsibility, database object, migration, identity and artifact has one named owner, and no object has overlapping DCM and Flyway ownership. The split is: DCM owns the supported engine objects (standard tables, procedures, functions, views, sequences, approved grants, ordinary tasks). Flyway owns the Calc Admin lifecycle schema with its hybrid tables, explicit renames and type transitions, data changes, clone-support objects and the existing <code>FIN_CALCULATION</code> migrations. Terraform owns accounts, databases, schemas, roles, warehouses and integrations.</p>
+<p>Why two tools? Because DCM cannot manage hybrid tables (its <code>DEFINE TABLE</code> has no <code>HYBRID</code> or <code>INDEX</code>; the POC saw <code>unexpected 'HYBRID'</code>), cannot run data changes, and reads a rename as drop plus create. The two live Calc Admin tables <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> were created by hand in INT on 2026-11-03 and exist in no Git file, so they are the first things Flyway must adopt. The engine's hand-built <code>data_changes/</code> runner with its <code>DATA_CHANGE_LOG</code> ledger is Flyway's idea reimplemented by hand; the target moves it into the Flyway lane. This lab builds those pieces in miniature.</p>
+<p>A working note dated 2026-11-11 recorded pausing DCM; the team has since confirmed that both tools are being implemented, so this lab teaches them as a pair, not as alternatives.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Terminal</strong> (repository root).</p>
+<pre><code>flyway -v
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: a Flyway version (the pack pins 13.12.2) and <code>EMPTY changeset</code>. If the plan is not empty, finish Lab 3 first. If <code>flyway -v</code> fails, install it as in file 02.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SELECT COUNT(*) AS CATEGORIES_N, HASH_AGG(*) AS CATEGORIES_HASH FROM SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES;
+SHOW SEQUENCES LIKE 'SEQ_%' IN SCHEMA SBX_INT.CALC_SUPPORT;
+SHOW TABLES LIKE 'CALC_%' IN SCHEMA SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see: the two seed categories, sequences <code>SEQ_WORKFLOW_ID</code> and <code>SEQ_AUDIT_EVENT_ID</code> (created by Lab 3, because the hybrid tables use them as defaults), and no <code>CALC_WORKFLOW_STATUS</code> or <code>CALC_AUDIT_EVENT</code> yet. Write down <code>CATEGORIES_N</code> and <code>CATEGORIES_HASH</code> for Step 4.9.</p>
+<p>Decide your mode from file 02: <code>HYBRID_MODE = H</code> (hybrid tables work in your account) or <code>S</code> (trial, no hybrid tables). In this lab, Mode S differs in three places, each marked with <code>#### If you are in Mode S (no hybrid tables)</code>: the migration folder, the missing indexes, and the primary-key demo.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> hybrid tables are not supported in trial accounts (https://docs.snowflake.com/en/user-guide/tables-hybrid-limitations and https://docs.snowflake.com/en/user-guide/admin-trial-account, read 2026-11-16).</p>
+</blockquote>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>Owner tool.</strong> The one tool whose files are allowed to create, alter and drop an object. Everyone else may read it, grant on it, or depend on it, but never define it.</p>
+<p><strong>Why one owner.</strong> Each tool believes it knows the desired state. DCM compares definitions with a snapshot. Flyway compares a history table with files. Neither looks at the other. If both write the same object, one overwrites the other and neither notices until data is lost (Step 4.11).</p>
+<pre><code> Terraform / bootstrap : databases, schemas, roles, warehouses, resource monitors, users
+ DCM                   : sequences, standard tables, views, functions, procedures, declared grants
+ Flyway                : hybrid tables + indexes + their grants, data changes, explicit renames
+ snow sql -f           : clone-support procedures (sandbox choice, see Lab 5)
+
+ same schema SBX_INT.CALC_SUPPORT, different objects, different histories:
+   DCM project object CALC_ENGINE_DCM        (what DCM defined)
+   table FLYWAY_HISTORY_CALC_SUPPORT         (what Flyway ran)
+</code></pre>
+<p><strong>Ordering.</strong> In a normal change, DCM goes first and Flyway second, because the Flyway hybrid tables use sequences DCM creates. Then a fresh DCM re-plan must be empty. In a rename change the order flips: Flyway renames first, then DCM updates the definition (Step 4.9).</p>
+<p><strong>Idempotent data fix.</strong> A change that is safe to run twice: the second run finds nothing to do. It is guarded by a row-count assertion so it fails loudly when the data is not what you expected, instead of updating the wrong rows.</p>
+<p><strong>Hybrid table (Mode H).</strong> A Snowflake table type with a mandatory enforced primary key, row-level locking and secondary indexes, designed for many small reads and writes. Lab 7 goes deeper. Here you only need: it cannot be defined by DCM, and in Mode S you replace it with a standard table that has the same columns.</p>
+<p><strong>Forward-only.</strong> An applied Flyway migration is never edited. A mistake is fixed by the next version.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> Flyway Community has no undo command and no dry run; Snowflake commits DDL immediately, so a half-failed migration leaves earlier statements applied (https://documentation.red-gate.com/fd/feature-summary-165740620.html and https://documentation.red-gate.com/flyway/reference/database-driver-reference/snowflake, read 2026-11-16).</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="part-a-flyway-takes-the-hybrid-pair-about-50-min">Part A: Flyway takes the hybrid pair (about 50 min)</h3>
+<h3 id="step-41-configure-the-main-flyway-project">Step 4.1 Configure the main Flyway project</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/flyway.toml</code> (committed, no secrets). It is the file from the contract; Lab 2 used a separate scratch project, this one is the real one.</p>
+<pre><code class="language-toml">[environments.target]
+url = &quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&quot;
+user = &quot;SBX_SVC_CICD&quot;
+# private key and url overrides come from environment variables / CLI parameters, never from this file
+
+[flyway]
+environment = &quot;target&quot;
+locations = [&quot;filesystem:migrations/common&quot;, &quot;filesystem:migrations/hybrid&quot;]
+defaultSchema = &quot;CALC_SUPPORT&quot;
+schemas = [&quot;CALC_SUPPORT&quot;]
+table = &quot;FLYWAY_HISTORY_CALC_SUPPORT&quot;
+validateOnMigrate = true
+outOfOrder = false
+baselineOnMigrate = false
+cleanDisabled = true
+createSchemas = false
+
+[flyway.placeholders]
+calc_db = &quot;SBX_INT&quot;
+calc_schema = &quot;CALC_SUPPORT&quot;
+app_role = &quot;SBX_FN_CALC_ENGINE_NP&quot;
+reader_role = &quot;SBX_CALC_READER&quot;
+</code></pre>
+<p>Every setting in the <code>[flyway]</code> block mirrors the NAIC target contract: validate on migrate, no out-of-order, no automatic baseline, <code>clean</code> disabled, no schema creation (the platform lane creates schemas), and a dedicated history table per migration boundary and environment.</p>
+<p>Create <code>flyway/.env.flyway.example</code> (committed) and copy it to <code>flyway/.env.flyway</code> (gitignored). Edit only the copy:</p>
+<pre><code>FLYWAY_URL=jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&amp;authenticator=snowflake_jwt&amp;private_key_file=&lt;ABSOLUTE_PATH_TO_HOME&gt;/.snowflake-sandbox/keys/sbx_svc_cicd_rsa_key.p8
+FLYWAY_LOCATIONS=filesystem:migrations/common,filesystem:migrations/hybrid
+FLYWAY_PLACEHOLDERS_CALC_DB=SBX_INT
+FLYWAY_PLACEHOLDERS_CALC_SCHEMA=CALC_SUPPORT
+</code></pre>
+<p>The file holds only a path to the key, never the key and never the passphrase.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables">If you are in Mode S (no hybrid tables)</h4>
+<p>Set <code>FLYWAY_LOCATIONS=filesystem:migrations/common,filesystem:migrations/standard</code> in your <code>flyway/.env.flyway</code>. Everything else is identical. Do not switch modes later without a fresh history, because the checksums of V1, V2 and V5 differ between the two folders.</p>
+<p>Run in: <strong>Terminal</strong>. Load the settings and type the passphrase without echo (never write it in a file or in chat):</p>
+<pre><code>cd flyway
+set -a; source .env.flyway; set +a
+read -rs PRIVATE_KEY_PASSPHRASE; export PRIVATE_KEY_PASSPHRASE
+flyway info
+</code></pre>
+<p>You should see: a connection to Snowflake and an empty list of migrations (the folders are still empty, and the history table does not exist yet; <code>migrate</code> creates it).</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> the Snowflake JDBC URL needs <code>db</code> and <code>warehouse</code>; key-pair login uses <code>authenticator=snowflake_jwt&amp;private_key_file=&lt;absolute path&gt;</code>; <code>flyway.toml</code> is the default config format and cannot be mixed with <code>flyway.conf</code>; environment variables follow <code>FLYWAY_&lt;UPPER_SNAKE&gt;</code> and override files (https://documentation.red-gate.com/flyway/reference/database-driver-reference/snowflake and https://www.red-gate.com/hub/product-learning/flyway/using-toml-configuration-files-with-flyway, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G21]:</strong> whether an encrypted key needs <code>JAVA_OPTS='-Dnet.snowflake.jdbc.useBundledBouncyCastleForPrivateKeyDecryption=true'</code> on Flyway 13.12.2 (the driver page mentions it for Linux). How to check at lab time: if <code>flyway info</code> fails with a key decryption error, export that variable and retry. Record the result in file 13.</p>
+<p><strong>TO-CONFIRM [TC-06-01]:</strong> that <code>FLYWAY_URL</code> overrides the <code>url</code> of the <code>target</code> environment in the TOML file, and that <code>FLYWAY_LOCATIONS</code> accepts a comma-separated list. How to check at lab time: <code>flyway info</code> shows the connected database and the locations it scanned. Fallback: pass <code>-url="..."</code> and <code>-locations="..."</code> on the command line. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-42-write-v1-and-v2-the-hybrid-pair">Step 4.2 Write V1 and V2 (the hybrid pair)</h3>
+<p>Run in: <strong>Terminal</strong>. Create the folders and files (you are still in <code>flyway/</code>):</p>
+<pre><code>mkdir -p migrations/common migrations/hybrid migrations/standard
+</code></pre>
+<p><code>migrations/hybrid/V1__create_calc_workflow_status.sql</code>:</p>
+<pre><code class="language-sql">CREATE HYBRID TABLE ${calc_db}.${calc_schema}.CALC_WORKFLOW_STATUS (
+    WORKFLOW_ID NUMBER(38,0) DEFAULT ${calc_db}.${calc_schema}.SEQ_WORKFLOW_ID.NEXTVAL NOT NULL,
+    CALC_ID NUMBER(38,0) NOT NULL,
+    ADMIN_STATUS VARCHAR(16) NOT NULL,
+    UPDATED_BY VARCHAR(128),
+    UPDATED_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    CONSTRAINT PK_CALC_WORKFLOW_STATUS PRIMARY KEY (WORKFLOW_ID),
+    INDEX IDX_WORKFLOW_CALC_ID (CALC_ID)
+);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${calc_db}.${calc_schema}.CALC_WORKFLOW_STATUS TO ROLE ${app_role};
+GRANT SELECT ON TABLE ${calc_db}.${calc_schema}.CALC_WORKFLOW_STATUS TO ROLE ${reader_role};
+</code></pre>
+<p><code>migrations/hybrid/V2__create_calc_audit_event.sql</code> (append-only for the app role: INSERT and SELECT only):</p>
+<pre><code class="language-sql">CREATE HYBRID TABLE ${calc_db}.${calc_schema}.CALC_AUDIT_EVENT (
+    EVENT_ID NUMBER(38,0) DEFAULT ${calc_db}.${calc_schema}.SEQ_AUDIT_EVENT_ID.NEXTVAL NOT NULL,
+    CALC_ID NUMBER(38,0) NOT NULL,
+    EVENT_TYPE VARCHAR(32),
+    EVENT_STATUS VARCHAR(16) NOT NULL,
+    ACTOR VARCHAR(128),
+    EVENT_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    CONSTRAINT PK_CALC_AUDIT_EVENT PRIMARY KEY (EVENT_ID),
+    INDEX IDX_AUDIT_CALC_ID (CALC_ID)
+);
+
+GRANT SELECT, INSERT ON TABLE ${calc_db}.${calc_schema}.CALC_AUDIT_EVENT TO ROLE ${app_role};
+GRANT SELECT ON TABLE ${calc_db}.${calc_schema}.CALC_AUDIT_EVENT TO ROLE ${reader_role};
+</code></pre>
+<p><code>EVENT_STATUS</code> takes the values <code>PENDING</code> or <code>COMPLETE</code>. The grants are in the migration on purpose: the hybrid tables are Flyway's, so their grants are Flyway's too. DCM's <code>access.sql</code> does not mention them.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables_1">If you are in Mode S (no hybrid tables)</h4>
+<p>Create the same two file names in <code>migrations/standard/</code>. Change <code>CREATE HYBRID TABLE</code> to <code>CREATE TABLE</code> and delete the <code>INDEX ...</code> lines (and the comma that precedes them). Keep every column, the primary key constraint and the grants. A standard table accepts the <code>PRIMARY KEY</code> clause but does not enforce it; Step 4.5 shows what that means.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>CREATE HYBRID TABLE</code> syntax with a mandatory primary key, <code>DEFAULT &lt;sequence&gt;.NEXTVAL</code>, and an out-of-line <code>INDEX &lt;name&gt; (&lt;cols&gt;)</code> clause; the primary key and the other constraints are enforced (https://docs.snowflake.com/en/sql-reference/sql/create-hybrid-table and https://docs.snowflake.com/en/user-guide/tables-hybrid-limitations, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G14]:</strong> <code>CREATE HYBRID TABLE</code> needs the schema privilege <code>CREATE HYBRID TABLE</code> since bundle 2026_02. Because <code>SBX_CICD_PIPELINE</code> owns <code>CALC_SUPPORT</code>, the migration should work without an explicit grant. If it fails with an insufficient-privileges error, run in a worksheet as <code>SECURITYADMIN</code> or <code>ACCOUNTADMIN</code>: <code>GRANT CREATE HYBRID TABLE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;</code> and record the exact error in file 13.</p>
+</blockquote>
+<h3 id="step-43-migrate-and-read-the-result">Step 4.3 Migrate and read the result</h3>
+<p>Run in: <strong>Terminal</strong> (still in <code>flyway/</code> with the environment loaded):</p>
+<pre><code>flyway validate
+flyway migrate
+flyway info
+</code></pre>
+<p>You should see: <code>validate</code> succeeds (there is nothing applied yet), <code>migrate</code> reports that it created the history table and applied versions 1 and 2, and <code>info</code> lists both with state <code>Success</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G08]:</strong> none of these two files contains <code>$$</code> blocks, so parsing is not at risk here. The data-fix migration in Step 4.6 does contain them; see there.</p>
+</blockquote>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SELECT * FROM SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT;
+SELECT TABLE_NAME, IS_HYBRID FROM SBX_INT.INFORMATION_SCHEMA.TABLES
+ WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME LIKE 'CALC\_%' ORDER BY 1;
+SHOW INDEXES IN TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+</code></pre>
+<p>You should see: two history rows (version 1 and 2, success), <code>IS_HYBRID = YES</code> for both tables in Mode H (<code>NO</code> in Mode S), in Mode H an index list that includes your secondary index with a status of <code>ACTIVE</code> (or <code>BUILD IN PROGRESS</code> for a moment), and grants showing only <code>SELECT</code> and <code>INSERT</code> for the app role.</p>
+<h3 id="step-44-prove-the-two-tools-coexist">Step 4.4 Prove the two tools coexist</h3>
+<p>Run in: <strong>Terminal</strong> (repository root, so <code>cd ..</code> first):</p>
+<pre><code>cd ..
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SHOW ENTITIES IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;
+</code></pre>
+<p>You should see: the DCM plan is still <code>EMPTY changeset</code>, and the entity list does not contain <code>CALC_WORKFLOW_STATUS</code>, <code>CALC_AUDIT_EVENT</code> or <code>FLYWAY_HISTORY_CALC_SUPPORT</code>. DCM only drops objects it manages. Objects it never defined are invisible to it, which is exactly why a Flyway-owned table can live next to DCM-owned tables in one schema.</p>
+<p>This is the first half of the ownership story. The second half (Step 4.11) shows what happens when both tools claim one object.</p>
+<h3 id="step-45-what-the-hybrid-pair-gives-you-an-enforced-primary-key-and-a-sequence-default">Step 4.5 What the hybrid pair gives you: an enforced primary key and a sequence default</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (CALC_ID, ADMIN_STATUS) VALUES (2001, 'DRAFT');
+SELECT WORKFLOW_ID, CALC_ID, ADMIN_STATUS FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS) VALUES (900, 2001, 'DRAFT');
+INSERT INTO SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS (WORKFLOW_ID, CALC_ID, ADMIN_STATUS) VALUES (900, 2002, 'DRAFT');
+</code></pre>
+<p>You should see: the first insert gets a <code>WORKFLOW_ID</code> from <code>SEQ_WORKFLOW_ID</code> without you supplying it (the sequence is DCM's object, used by Flyway's table). In Mode H the last statement fails with a duplicate key error on the primary key. In Mode S it succeeds, and two rows now share <code>WORKFLOW_ID</code> 900.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-06-02]:</strong> the exact duplicate-key error text for a hybrid table. The docs say the primary key is enforced; the message text was not captured. How to check at lab time: read your own error and paste it into file 13.</p>
+</blockquote>
+<p>Why this matters: in the target Calc Admin design the only job of the hybrid table is to hold an enforced key and a row lock, "one open revision per calc set and year". A standard table can only hold that key as documentation. Lab 7 builds on this.</p>
+<p>Clean the demo rows:</p>
+<pre><code class="language-sql">DELETE FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;
+</code></pre>
+<p>You should see: <code>0</code>. The tables must be empty when you leave this step (the NAIC target requires an "empty state" check after creating a hybrid table in a clone).</p>
+<h3 id="part-b-a-data-change-as-a-migration-about-30-min">Part B: a data change as a migration (about 30 min)</h3>
+<h3 id="step-46-write-v3-the-idempotent-data-fix">Step 4.6 Write V3, the idempotent data fix</h3>
+<p>Scenario: some old calculation rows have no status. The business rule says the default is <code>ACTIVE</code>. The fix must be repeatable, must touch exactly the expected rows, and must leave a ledger row. This is the Flyway version of the NAIC data change <code>V202611110955__sync_legacy_target_db_schema.sql</code>, which used unqualified table names, a schema guard, a precondition check, one transaction, a count of pending rows, the update, a count of remaining rows, an assertion and a commit.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>): create two "legacy" rows. Rows are data, so DCM does not care.</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.CALC_SUPPORT.CALCULATIONS (CALC_NAME, CALC_STATUS) VALUES ('LEGACY_A', NULL), ('LEGACY_B', NULL);
+SELECT COUNT(*) AS NULL_STATUS_ROWS FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_STATUS IS NULL;
+</code></pre>
+<p>You should see: <code>2</code>. The migration will hard-code that number as <code>expected_rows</code>.</p>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/migrations/common/V3__data_fix_default_calc_status.sql</code>:</p>
+<pre><code class="language-sql">EXECUTE IMMEDIATE $$
+DECLARE
+    expected_rows NUMBER DEFAULT 2;
+    pending_rows NUMBER;
+    changed_rows NUMBER;
+    e_unexpected EXCEPTION (-20010, 'V3 assertion failed: unexpected number of rows');
+BEGIN
+    SELECT COUNT(*) INTO :pending_rows
+      FROM ${calc_db}.${calc_schema}.CALCULATIONS WHERE CALC_STATUS IS NULL;
+    IF (:pending_rows = 0) THEN
+        RETURN 'nothing to do';
+    END IF;
+    IF (:pending_rows &lt;&gt; :expected_rows) THEN
+        RAISE e_unexpected;
+    END IF;
+    BEGIN TRANSACTION;
+    UPDATE ${calc_db}.${calc_schema}.CALCULATIONS SET CALC_STATUS = 'ACTIVE' WHERE CALC_STATUS IS NULL;
+    changed_rows := SQLROWCOUNT;
+    IF (:changed_rows &lt;&gt; :expected_rows) THEN
+        ROLLBACK;
+        RAISE e_unexpected;
+    END IF;
+    INSERT INTO ${calc_db}.${calc_schema}.DATA_CHANGE_LOG (CHANGE_VERSION, DESCRIPTION, EXPECTED_ROWS, ROWS_AFFECTED)
+    VALUES ('3', 'default calc status to ACTIVE', :expected_rows, :changed_rows);
+    COMMIT;
+    RETURN 'updated ' || :changed_rows;
+END;
+$$;
+</code></pre>
+<p>Read it as five rules, which every data-change migration follows: (1) count the rows the change should touch; (2) stop if the count is not what you expected; (3) the change statement is safe to repeat (it only touches rows still needing the change); (4) assert the affected rows equal the expectation, and roll back otherwise; (5) write one ledger row. After it is applied, you never edit it (fix forward).</p>
+<p>Two honest weaknesses to write in your notes: the expected row count is a constant that differs per environment (NAIC INT had 689 rows on its first run, other environments will differ), and the ledger row is written only when something changed.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G08]:</strong> that Flyway's parser accepts an <code>EXECUTE IMMEDIATE $$ ... $$</code> block with semicolons inside. NAIC's engine is procedure-heavy, so this matters. How to check at lab time: Step 4.7. Fallback if the migration fails to parse: keep only the plain <code>UPDATE</code> and the ledger <code>INSERT</code> with the constants in the file, and run the count check by hand before migrating. You lose the in-file assertion; note that cost. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-47-migrate-v3-then-prove-it-is-idempotent">Step 4.7 Migrate V3, then prove it is idempotent</h3>
+<p>Run in: <strong>Terminal</strong> (in <code>flyway/</code>, environment loaded):</p>
+<pre><code>cd flyway
+flyway info
+flyway migrate
+flyway info
+cd ..
+</code></pre>
+<p>You should see: before <code>migrate</code>, V3 is <code>Pending</code>; after, it is <code>Success</code>.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT CALC_NAME, CALC_STATUS FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_NAME LIKE 'LEGACY%';
+SELECT * FROM SBX_INT.CALC_SUPPORT.DATA_CHANGE_LOG;
+</code></pre>
+<p>You should see: both legacy rows now <code>ACTIVE</code>, and exactly one ledger row with <code>CHANGE_VERSION = 3</code>, <code>EXPECTED_ROWS = 2</code>, <code>ROWS_AFFECTED = 2</code>.</p>
+<p>Now prove the "safe to repeat" claim without cheating Flyway. Run the same block by hand in a worksheet (copy the SQL, replace the placeholders with <code>SBX_INT</code> and <code>CALC_SUPPORT</code>).</p>
+<p>You should see: <code>nothing to do</code>, no new ledger row. The <code>DATA_CHANGE_LOG</code> table is DCM's (Lab 3); the migration that writes to it is Flyway's. A Flyway file may write rows into a DCM-owned table. What it must never do is <code>CREATE</code>, <code>ALTER</code> or <code>DROP</code> that table.</p>
+<h3 id="part-c-a-rename-the-case-where-the-tools-must-cooperate-about-50-min">Part C: a rename, the case where the tools must cooperate (about 50 min)</h3>
+<h3 id="step-48-what-dcm-says-when-asked-to-define-a-flyway-table-mode-h-only-plan-only">Step 4.8 What DCM says when asked to define a Flyway table (Mode H only, plan only)</h3>
+<p>Run in: <strong>Terminal</strong>. Create a temporary file <code>dcm/calc_engine/sources/definitions/tables/CALC_AUDIT_EVENT.sql</code> that defines the live hybrid table as a standard <code>DEFINE TABLE</code> with the same columns (no <code>INDEX</code> clause is possible). Then plan:</p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p><strong>Do not deploy.</strong> Delete the temporary file straight afterwards.</p>
+<p>You should see: one of three outcomes: an adoption-style ALTER, an error that the object is a hybrid table, or an ALTER that would change its type. Write down which. A deploy of this could convert or recreate a table that holds audit history, and hybrid tables cannot be undropped.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G07]:</strong> <code>DEFINE TABLE</code> on an existing hybrid table is not covered by the docs (hybrid tables are not in the supported list). How to check at lab time: the plan above. Record the outcome in file 13.</p>
+</blockquote>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables_2">If you are in Mode S (no hybrid tables)</h4>
+<p>Skip this step. You will see the same ownership clash with standard tables in Step 4.11.</p>
+<h3 id="step-49-the-coordinated-rename-formula_categories-becomes-calc_categories">Step 4.9 The coordinated rename: <code>FORMULA_CATEGORIES</code> becomes <code>CALC_CATEGORIES</code></h3>
+<p>This is the NAIC six-step rename protocol (architecture page, section on DCM and Flyway ownership), in sandbox size. The reason it exists: DCM reads a rename as drop plus create, which loses the data (Lab 3, Step 3.19), while Flyway can do an in-place <code>ALTER TABLE ... RENAME TO</code>.</p>
+<p>Learner action (git, you run it): start a branch, for example <code>git switch -c feature/LAB4A</code>. The whole protocol is one change on one branch: the Flyway rename and the DCM definition updates together, so a reviewer sees both.</p>
+<p><strong>Protocol step 1: write both halves.</strong> Run in: <strong>Terminal</strong>.</p>
+<ol>
+<li>Rename the DCM file to <code>dcm/calc_engine/sources/definitions/tables/CALC_CATEGORIES.sql</code> (use <code>git mv</code>; you run git) and change its <code>DEFINE TABLE</code> line to the new name. Keep every column.</li>
+<li>In <code>procedures/SP_ADD_CATEGORY.sql</code> replace the two occurrences of <code>FORMULA_CATEGORIES</code> with <code>CALC_CATEGORIES</code>.</li>
+<li>In <code>grants/access.sql</code> replace the app-role and reader-role lines that mention <code>FORMULA_CATEGORIES</code> with <code>CALC_CATEGORIES</code>.</li>
+<li>Create <code>flyway/migrations/common/V4__rename_formula_categories_to_calc_categories.sql</code>:</li>
+</ol>
+<pre><code class="language-sql">ALTER TABLE ${calc_db}.${calc_schema}.FORMULA_CATEGORIES RENAME TO ${calc_db}.${calc_schema}.CALC_CATEGORIES;
+</code></pre>
+<p><strong>Protocol step 2: read the unsafe plan against the state before the rename.</strong> Do not migrate yet.</p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+cp dcm/calc_engine/out/plan_result.json dcm/calc_engine/out/plan_unsafe_rename.json
+</code></pre>
+<p>You should see: a DROP of <code>FORMULA_CATEGORIES</code>, a CREATE of <code>CALC_CATEGORIES</code>, an ALTER of <code>SP_ADD_CATEGORY</code>, and grant changes. This is the "unsafe remove/add interpretation". If you deployed it, the two category rows would be gone. Rule: reject any plan that contains a DROP of a table that has data.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G06]:</strong> this is the experiment that proves the rename reading in the main project; the scratch version was Lab 3, Step 3.19. Record the plan text in file 13.</p>
+</blockquote>
+<p><strong>Protocol step 3: capture evidence.</strong> Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SELECT COUNT(*) AS CATEGORIES_N, HASH_AGG(*) AS CATEGORIES_HASH FROM SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES;
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES;
+SHOW TABLES LIKE 'FORMULA_CATEGORIES' IN SCHEMA SBX_INT.CALC_SUPPORT;
+SELECT PROCEDURE_NAME FROM SBX_INT.INFORMATION_SCHEMA.PROCEDURES
+ WHERE PROCEDURE_SCHEMA = 'CALC_SUPPORT' AND PROCEDURE_DEFINITION ILIKE '%FORMULA_CATEGORIES%';
+</code></pre>
+<p>You should see: your recorded count and hash, the grants, the owner <code>SBX_CICD_PIPELINE</code>, and <code>SP_ADD_CATEGORY</code> as the one consumer.</p>
+<p><strong>Protocol step 4: apply the rename through Flyway only.</strong> Run in: <strong>Terminal</strong>:</p>
+<pre><code>cd flyway
+flyway validate
+flyway migrate
+flyway info
+cd ..
+</code></pre>
+<p>You should see: V4 <code>Success</code>. The owner of the table does not change.</p>
+<p>Now look at the window between the two tools. Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY('RATIO', CURRENT_USER());
+</code></pre>
+<p>You should see: an error saying the table <code>FORMULA_CATEGORIES</code> does not exist. The procedure body still refers to the old name until DCM redeploys it. In a pipeline the two steps run back to back, but the window is real. Larger systems avoid it with expand and contract: add the new name, move consumers, then remove the old one. The NAIC architecture lists that approach for incompatible changes.</p>
+<p><strong>Protocol step 5: a fresh full plan against the final definitions.</strong></p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: an ALTER on <code>SP_ADD_CATEGORY</code> (the body changed), adoption-style entries for <code>CALC_CATEGORIES</code> and the grants, and <strong>no DROP and no CREATE of <code>CALC_CATEGORIES</code></strong>. Reject the plan if you see either.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-06-03]:</strong> how DCM describes the old entity <code>FORMULA_CATEGORIES</code> after an out-of-band rename. The docs say an object dropped by hand disappears from <code>SHOW ENTITIES</code>, which suggests no DROP entry and a clean adoption of the new name. How to check at lab time: the plan above and <code>SHOW ENTITIES</code>. Record the result in file 13. If the plan proposes anything destructive, stop and read the entries.</p>
+</blockquote>
+<p><strong>Protocol step 6: deploy DCM and require an empty re-plan.</strong></p>
+<pre><code>snow dcm deploy --target INT --from dcm/calc_engine --alias int-rename-categories -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT COUNT(*) AS CATEGORIES_N, HASH_AGG(*) AS CATEGORIES_HASH FROM SBX_INT.CALC_SUPPORT.CALC_CATEGORIES;
+CALL SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY('RATIO', CURRENT_USER());
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.CALC_CATEGORIES;
+</code></pre>
+<p>You should see: <code>EMPTY changeset</code>; the same count and hash as before the rename; the procedure returns <code>OK: RATIO</code>; the grants are present.</p>
+<p>Learner action (git): commit the branch with a message such as <code>feat: rename formula_categories to calc_categories (flyway V4 + dcm)</code>. The protocol is complete only when both halves are in one change set.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Do the Flyway part (V4) as written. Replace the DCM parts with <code>CREATE OR REPLACE PROCEDURE</code> of the edited <code>SP_ADD_CATEGORY</code> body in a worksheet, and read Steps 2, 5 and 6 as explanation.</p>
+<blockquote>
+<p><strong>Source note:</strong> the six-step rename protocol comes from the NAIC architecture page <code>calc-engine-complete-architecture.html</code> (section on deployment ownership). It is NAIC's design, not a Snowflake document, so it carries no VERIFIED tag.</p>
+</blockquote>
+<h3 id="part-d-two-owners-for-one-object-about-40-min">Part D: two owners for one object (about 40 min)</h3>
+<h3 id="step-410-set-up-an-experiment-schema-and-see-why-dcm-goes-first">Step 4.10 Set up an experiment schema and see why DCM goes first</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SYSADMIN</code> (or <code>ACCOUNTADMIN</code> for this one statement; switch back afterwards). Schemas belong to the platform lane, so the pipeline role cannot create them.</p>
+<pre><code class="language-sql">USE ROLE SYSADMIN;
+CREATE SCHEMA IF NOT EXISTS SBX_INT.LAB4_CONFLICT;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.LAB4_CONFLICT TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+USE ROLE SBX_CICD_PIPELINE;
+</code></pre>
+<p>Now the ordering demo, in the same worksheet:</p>
+<pre><code class="language-sql">CREATE TABLE SBX_INT.LAB4_CONFLICT.ORDER_DEMO (
+    ID NUMBER(38,0) DEFAULT SBX_INT.LAB4_CONFLICT.SEQ_NOT_YET.NEXTVAL,
+    LABEL VARCHAR(20)
+);
+</code></pre>
+<p>You should see: an error that the sequence does not exist. A table that points at a sequence needs the sequence first. In the engine, DCM creates sequences and Flyway creates the hybrid tables that use them, so a normal change runs DCM first and Flyway second. A rename flips this (Step 4.9) because the Flyway rename changes what DCM must see.</p>
+<h3 id="step-411-the-conflict-experiment-both-tools-claim-one-table">Step 4.11 The conflict experiment: both tools claim one table</h3>
+<p>Scenario: a developer adds a table to the DCM project, and another developer, unaware, writes a Flyway migration for the same table.</p>
+<p><strong>Part 1: DCM defines it.</strong> Run in: <strong>Terminal</strong> (repository root). Create <code>dcm/lab4_conflict/manifest.yml</code>:</p>
+<pre><code class="language-yaml">manifest_version: 2
+type: DCM_PROJECT
+default_target: 'CONFLICT'
+targets:
+  CONFLICT:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_INT.LAB4_CONFLICT.CONFLICT_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'CONFLICT'
+templating:
+  defaults:
+    db: 'SBX_INT'
+  configurations:
+    CONFLICT: { db: 'SBX_INT' }
+</code></pre>
+<p>and <code>dcm/lab4_conflict/sources/definitions/shared_thing.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE {{db}}.LAB4_CONFLICT.SHARED_THING (
+    ID NUMBER(38,0) NOT NULL,
+    LABEL VARCHAR(20),
+    primary key (ID)
+);
+</code></pre>
+<pre><code>snow dcm create --target CONFLICT --from dcm/lab4_conflict --if-not-exists -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm deploy --target CONFLICT --from dcm/lab4_conflict --alias conflict-v1 -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>: <code>INSERT INTO SBX_INT.LAB4_CONFLICT.SHARED_THING VALUES (1, 'one'), (2, 'two');</code></p>
+<p><strong>Part 2: Flyway also creates it.</strong> Create <code>flyway/lab4_conflict/flyway.toml</code> (same environment as the main project, its own history table and schema), and <code>migrations/V1__create_shared_thing.sql</code> beside it:</p>
+<pre><code class="language-toml">[environments.target]
+url = &quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&quot;
+user = &quot;SBX_SVC_CICD&quot;
+
+[flyway]
+environment = &quot;target&quot;
+locations = [&quot;filesystem:migrations&quot;]
+defaultSchema = &quot;LAB4_CONFLICT&quot;
+schemas = [&quot;LAB4_CONFLICT&quot;]
+table = &quot;FLYWAY_HISTORY_CONFLICT&quot;
+cleanDisabled = true
+createSchemas = false
+</code></pre>
+<pre><code class="language-sql">CREATE TABLE SBX_INT.LAB4_CONFLICT.SHARED_THING (
+    ID NUMBER(38,0),
+    LABEL VARCHAR(20),
+    EXTRA VARCHAR(20)
+);
+</code></pre>
+<p>Run in: <strong>Terminal</strong> (the same shell where you loaded <code>.env.flyway</code>; set <code>FLYWAY_LOCATIONS=filesystem:migrations</code> for this run, because the variable from the main project would point to other folders):</p>
+<pre><code>cd flyway/lab4_conflict
+FLYWAY_LOCATIONS=filesystem:migrations flyway migrate
+FLYWAY_LOCATIONS=filesystem:migrations flyway info
+</code></pre>
+<p>You should see: the migration fails because the table already exists, and the history shows version 1 as <code>Failed</code>. This is the lucky outcome: a plain <code>CREATE TABLE</code> is a safe collision.</p>
+<p><strong>Part 3: the "fix" that causes the damage.</strong> The developer sees "already exists" and edits the file to <code>CREATE OR REPLACE TABLE</code>, which is the usual shortcut. Because the failed version is not applied, Flyway lets you repair and rerun:</p>
+<pre><code>FLYWAY_LOCATIONS=filesystem:migrations flyway repair
+# edit migrations/V1__create_shared_thing.sql: CREATE TABLE -&gt; CREATE OR REPLACE TABLE
+FLYWAY_LOCATIONS=filesystem:migrations flyway migrate
+cd ../..
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT * FROM SBX_INT.LAB4_CONFLICT.SHARED_THING;
+DESC TABLE SBX_INT.LAB4_CONFLICT.SHARED_THING;
+</code></pre>
+<p>You should see: zero rows (the two rows are gone) and an extra column <code>EXTRA</code>. Flyway reports success. The data was destroyed silently and the table no longer matches DCM's definition.</p>
+<p><strong>Part 4: the tools fight.</strong> Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm plan --target CONFLICT --from dcm/lab4_conflict --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/lab4_conflict/out/plan_result.json
+</code></pre>
+<p>You should see: an ALTER on <code>SHARED_THING</code> that wants to remove <code>EXTRA</code> and restore the DCM shape. If you deployed it, the table would match DCM, the Flyway history would still claim that V1 created <code>EXTRA</code>, and <code>flyway validate</code> would still pass because it compares file checksums, not tables. Neither tool can see the disagreement.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-06-04]:</strong> the exact states reported at each part: the status of the failed V1 in <code>flyway info</code>, the <code>CREATE OR REPLACE</code> outcome on a table that DCM manages (ownership and management are expected to stay with the project), and the plan text. Record the results in file 13.</p>
+</blockquote>
+<p><strong>The cure</strong> is organisational, not technical: pick one owner. The table is a standard table, so it belongs to DCM. Delete the Flyway file. If a Flyway migration needs to write rows into a DCM table, it may (as V3 does with <code>DATA_CHANGE_LOG</code>), but it may never create, alter, replace or drop it. A cheap guard in CI is a script that lists every object mentioned in <code>CREATE|ALTER|DROP</code> statements in <code>flyway/migrations</code> and fails if that object is in the DCM definitions. NAIC's architecture calls the matching idea <code>ownership.yml</code> ("exact owner/tool/role per object or prefix"); the POC branch has none yet. The sandbox's equivalent is the decision table in Step 4.12.</p>
+<h4 id="if-you-are-in-mode-h-hybrid-tables">If you are in Mode H (hybrid tables)</h4>
+<p>Also run the mirror image: ask DCM to define a table that Flyway owns (done in Step 4.8). The point is symmetrical: a table has a single definition, in a single tool.</p>
+<h3 id="step-412-the-ordering-rules-and-the-decision-table">Step 4.12 The ordering rules and the decision table</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>: clean the experiment first.</p>
+<pre><code class="language-sql">DROP DCM PROJECT IF EXISTS SBX_INT.LAB4_CONFLICT.CONFLICT_DCM;
+DROP SCHEMA IF EXISTS SBX_INT.LAB4_CONFLICT;
+</code></pre>
+<p>Copy this table into your notes (and later into <code>docs/learning/</code> as your own sandbox ownership map). Fill the last column from what you did in this lab.</p>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Owner tool</th>
+<th>Order</th>
+<th>Why</th>
+<th>Where you did it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New schema, database, role, warehouse, user, resource monitor</td>
+<td>Platform lane (Terraform in NAIC, bootstrap SQL here)</td>
+<td>before everything</td>
+<td>containers and identities must exist first; DCM cannot manage users or monitors</td>
+<td>file 02</td>
+</tr>
+<tr>
+<td>New standard table, new column on a standard table</td>
+<td>DCM</td>
+<td>DCM before Flyway</td>
+<td>declarative, previewable; ALTER shown in the plan</td>
+<td>Lab 3</td>
+</tr>
+<tr>
+<td>New sequence</td>
+<td>DCM</td>
+<td>DCM before Flyway</td>
+<td>hybrid tables use them as defaults (Step 4.10)</td>
+<td>Lab 3</td>
+</tr>
+<tr>
+<td>Edit a procedure, function or view body</td>
+<td>DCM</td>
+<td>any time</td>
+<td>one ALTER per object in the plan</td>
+<td>Lab 3, Step 3.11</td>
+</tr>
+<tr>
+<td>Grants on DCM objects</td>
+<td>DCM (<code>access.sql</code>)</td>
+<td>with the object</td>
+<td>declared, reapplied on every deploy</td>
+<td>Lab 3, Step 3.13</td>
+</tr>
+<tr>
+<td>New hybrid table, hybrid index, hybrid column</td>
+<td>Flyway</td>
+<td>after DCM</td>
+<td>DCM cannot define them</td>
+<td>Steps 4.2 and 4.3</td>
+</tr>
+<tr>
+<td>Grants on a Flyway table</td>
+<td>Flyway (inside the migration)</td>
+<td>with the table</td>
+<td>the owner of the table owns its grants</td>
+<td>Step 4.2</td>
+</tr>
+<tr>
+<td>Fix or backfill data</td>
+<td>Flyway</td>
+<td>after the schema change it depends on</td>
+<td>ordered, checksummed, asserted, ledgered</td>
+<td>Steps 4.6 and 4.7</td>
+</tr>
+<tr>
+<td>Rename a table or column</td>
+<td>Flyway first, then DCM definition</td>
+<td>Flyway, then DCM, then empty re-plan</td>
+<td>DCM reads a rename as drop and create</td>
+<td>Step 4.9</td>
+</tr>
+<tr>
+<td>Remove a table on purpose</td>
+<td>DCM (delete the definition)</td>
+<td>with an exact-FQN DROP approval and a backup</td>
+<td>the plan shows a DROP, so CI must demand approval</td>
+<td>Lab 3, Step 3.7</td>
+</tr>
+<tr>
+<td>Clone-support procedures</td>
+<td><code>snow sql -f</code> in the sandbox (the NAIC architecture places clone-support under Flyway)</td>
+<td>before the first clone</td>
+<td>they must exist before any clone is created</td>
+<td>Lab 5</td>
+</tr>
+<tr>
+<td>The Flyway history table</td>
+<td>Flyway (created by <code>migrate</code>)</td>
+<td>automatic</td>
+<td>never define it in DCM</td>
+<td>Step 4.3</td>
+</tr>
+</tbody>
+</table>
+<p>Ordering in one line: <strong>normal change</strong> is DCM plan, review, DCM deploy, Flyway migrate, DCM full re-plan empty. <strong>Rename change</strong> is Flyway rename, DCM definition update, full plan with no DROP, DCM deploy, empty re-plan.</p>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Why does a Flyway-owned table in the same schema not get dropped by a DCM deploy?</li>
+<li>Why must a normal change run DCM before Flyway?</li>
+<li>What does DCM's plan show for a renamed table, and what would deploying it do to the data?</li>
+<li>In the rename protocol, why is the DCM full plan taken twice?</li>
+<li>Which three properties make V3 a safe data change?</li>
+<li>In the conflict experiment, why did <code>flyway validate</code> still pass after DCM changed the table?</li>
+<li>Who owns the grants on <code>CALC_AUDIT_EVENT</code>, and who owns the grants on <code>CALCULATIONS</code>?</li>
+<li>Which parts of this lab differ between Mode H and Mode S, and what do you lose in Mode S?</li>
+</ol>
+<details>
+<summary>Answers</summary>
+
+1. DCM only drops objects it manages, and it manages only what it defined (Step 4.4).
+2. The Flyway tables use sequences that DCM creates (Step 4.10).
+3. A DROP of the old name and a CREATE of the new name. Deploying it would give an empty new table; the data is gone.
+4. First against the pre-migration state, to prove the unsafe reading and reject it; second after the Flyway rename, against the final definitions, to confirm there is no DROP or CREATE and then deploy.
+5. The change touches only rows that still need it (idempotent), it asserts the expected row count and rolls back otherwise, and it leaves a ledger row. It is also never edited after being applied.
+6. Flyway compares file checksums with its history, not tables with files.
+7. Flyway owns the first (inside V2); DCM owns the second (`access.sql`).
+8. Mode S uses the `standard` folder, has no indexes, does not enforce the primary key, and its locking behaviour cannot be shown. You still learn the ownership and ordering rules, which do not depend on the table type.
+
+</details>
+
+<h2 id="7-break-it">7. Break it</h2>
+<p>Scenario: the data fix finds a different number of rows from the one the author expected.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.CALC_SUPPORT.CALCULATIONS (CALC_NAME, CALC_STATUS) VALUES ('LEGACY_C', NULL), ('LEGACY_D', NULL), ('LEGACY_E', NULL);
+</code></pre>
+<p>Run the V3 block by hand again (copy it from the file, replace the placeholders with <code>SBX_INT</code> and <code>CALC_SUPPORT</code>).</p>
+<p>Symptom: the block ends with an error <code>V3 assertion failed: unexpected number of rows</code>. Nothing was updated.
+Diagnosis: three rows match, the author expected two. The pre-check refused to guess.
+Recovery: look at the three rows. Either the new rows are wanted (then write a new migration <code>V3_1__...</code> or a new version with the correct expected number and its own ledger row) or they are mistakes (delete them). Never edit V3: it is applied, and Flyway would fail <code>validate</code> with a checksum mismatch. Then <code>DELETE FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_NAME IN ('LEGACY_C','LEGACY_D','LEGACY_E');</code>.</p>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DCM cannot define hybrid tables</td>
+<td>Step 4.8 (and Lab 3, Step 3.16)</td>
+<td>Flyway</td>
+<td>VERIFIED (supported list); outcome of <code>DEFINE TABLE</code> on a hybrid table TO-CONFIRM TC-G07</td>
+</tr>
+<tr>
+<td>DCM cannot rename</td>
+<td>Step 4.9, protocol step 2</td>
+<td>Flyway rename plus coordinated DCM change</td>
+<td>TO-CONFIRM TC-G06</td>
+</tr>
+<tr>
+<td>Flyway has no preview, no drift detection and no undo in Community</td>
+<td>Step 4.11 (the disagreement stays invisible)</td>
+<td>DCM plan for DCM objects; evidence queries and clones for Flyway objects</td>
+<td>VERIFIED (feature summary)</td>
+</tr>
+<tr>
+<td>Two owners silently destroy data</td>
+<td>Step 4.11</td>
+<td>One owner per object, an ownership map, a CI guard</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>A rename leaves a window where consumers are broken</td>
+<td>Step 4.9</td>
+<td>Run both steps in one pipeline run; expand and contract for real systems</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>Data-fix expected counts differ per environment</td>
+<td>Step 4.6</td>
+<td>Compute expectations per environment or parameterise carefully</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>The hybrid pair's DDL auto-commits, so a failure half-way leaves partial objects</td>
+<td>Lab 2 (and Lab 8 drill)</td>
+<td>Small migrations, manual cleanup, fix forward</td>
+<td>VERIFIED (driver page)</td>
+</tr>
+<tr>
+<td>Mode S cannot show enforced keys, indexes or locking</td>
+<td>Step 4.5</td>
+<td>Upgrade the account, or read the docs</td>
+<td>VERIFIED (trial page)</td>
+</tr>
+<tr>
+<td>The <code>$$</code> parser risk in Flyway</td>
+<td>Step 4.6</td>
+<td>Plain-statement fallback</td>
+<td>TO-CONFIRM TC-G08</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>Every object has one owner tool, and an ownership map makes it checkable.</li>
+<li>DCM and Flyway coexist in one schema because DCM only manages what it defined and Flyway only runs its own files.</li>
+<li>A normal change runs DCM, then Flyway, then an empty DCM re-plan. A rename runs Flyway first, and the unsafe DCM plan is read and rejected before it.</li>
+<li>A data change is safe when it is idempotent, asserted and ledgered, and it is never edited after it is applied.</li>
+<li>When two tools own one object they destroy data silently and neither can see it.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>), if not already done in Step 4.12:</p>
+<pre><code class="language-sql">DROP DCM PROJECT IF EXISTS SBX_INT.LAB4_CONFLICT.CONFLICT_DCM;
+DROP SCHEMA IF EXISTS SBX_INT.LAB4_CONFLICT;
+DELETE FROM SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS;
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>: <code>rm -rf dcm/lab4_conflict flyway/lab4_conflict dcm/calc_engine/out</code>.</p>
+<p>Keep: the hybrid pair or stand-ins, the history at version 4, the renamed category table, the DCM project and its definitions. Cost note: hybrid tables add storage and use the warehouse only when you run statements; nothing here runs while the warehouse is suspended.</p>
+<p>Learner action (git): the repository now holds <code>flyway/**</code> and the renamed DCM files; merge your branch the way you prefer. Make sure <code>flyway/.env.flyway</code> is not staged (it is gitignored).</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<ul>
+<li>Flyway history <code>SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT</code> is at version 4 (V1, V2, V3, V4 applied).</li>
+<li>Hybrid pair <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> exist (Mode H) or their standard stand-ins (Mode S), both empty, with grants: app role SELECT, INSERT, UPDATE, DELETE on the first and only SELECT, INSERT on the second; reader SELECT on both.</li>
+<li><code>DATA_CHANGE_LOG</code> has the ledger row for version 3.</li>
+<li><code>FORMULA_CATEGORIES</code> is now <code>CALC_CATEGORIES</code>; the DCM definition file is <code>tables/CALC_CATEGORIES.sql</code>; <code>SP_ADD_CATEGORY</code> and <code>access.sql</code> use the new name; the DCM deployment <code>int-rename-categories</code> is done and the re-plan is empty.</li>
+<li>The conflict experiment (<code>SBX_INT.LAB4_CONFLICT</code>, <code>dcm/lab4_conflict</code>, <code>flyway/lab4_conflict</code>) is removed.</li>
+<li>Your notes contain the ownership decision table from Step 4.12.</li>
+<li><code>V5__add_audit_event_type_index.sql</code> is <strong>not</strong> applied yet (Lab 7 does it).</li>
+</ul>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G06, TC-G07, TC-G08, TC-G14, TC-G21, TC-06-01 (env var overrides the TOML environment), TC-06-02 (duplicate-key error text), TC-06-03 (DCM view of the old entity after an out-of-band rename), TC-06-04 (states in the conflict experiment). New names introduced in this file for the contract: schema <code>SBX_INT.LAB4_CONFLICT</code>, folders <code>dcm/lab4_conflict</code> and <code>flyway/lab4_conflict</code>, project <code>CONFLICT_DCM</code>, Flyway history <code>FLYWAY_HISTORY_CONFLICT</code>, plus the helper <code>scripts/plan_summary.py</code> from Lab 3.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Continue with <a href="07-lab5-clones-and-ticket-environments.md">07-lab5-clones-and-ticket-environments.md</a>.</p>
+</body></html>

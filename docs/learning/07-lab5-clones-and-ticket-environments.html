@@ -1,0 +1,678 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 5: zero-copy clones as ticket environments (file 07)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-5-zero-copy-clones-as-ticket-environments-file-07">Lab 5: zero-copy clones as ticket environments (file 07)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 5 | <strong>File no:</strong> 07 | <strong>Time estimate:</strong> 2.5 h | <strong>Prerequisites:</strong> file 06 (Lab 4 state: Flyway history at version 4, hybrid pair or stand-ins, DCM re-plan empty) | <strong>Modes supported:</strong> H or S, D (a Mode D-off path replaces the DCM deploy into the clone) | <strong>Leaves behind:</strong> procedures <code>CREATE_CALC_DEV_CLONE</code> and <code>DROP_CALC_DEV_CLONE</code> deployed and granted, <code>scripts/refresh_dev_clone.sh</code>, <code>scripts/assert_zero_int_writes.sql</code>, <code>scripts/smoke_clone.sql</code>, clone <code>SBX_DEV_LAB5A</code> dropped, the "INT baseline" row counts written down</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>By the end of this lab you can:</p>
+<ol>
+<li>Create a database clone, explain why it costs almost nothing, and say what <code>DATA_RETENTION_TIME_IN_DAYS = 0</code> removes.</li>
+<li>Show what a schema clone does with hybrid tables, and how <code>IGNORE HYBRID TABLES</code> and an empty re-creation fix it.</li>
+<li>Explain and demonstrate the Flyway history trap in a clone.</li>
+<li>Write a guarded pair of stored procedures that create and drop a ticket clone from a validated ticket id only.</li>
+<li>Deploy a branch's DCM definitions into the clone so the clone writes only to itself, and prove that nothing was written to INT.</li>
+<li>Clean up completely, and know what a clone leaves behind if you forget.</li>
+</ol>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world.</strong> In NAIC INT every developer used to share one set of engine tables, and the old way to test a change was to paste it into INT. The <code>feature/dcm-poc</code> branch replaced that with one clone per ticket: <code>CALC_DEV_&lt;ticket&gt;</code>. The procedures <code>COMMON_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE</code> and <code>DROP_CALC_DEV_CLONE</code> are <code>EXECUTE AS OWNER</code> (owner <code>CICD_PIPELINE</code>), accept only a ticket id of 1 to 40 letters or digits, and build the database name themselves. The script <code>scripts/refresh_dev_clone.sh &lt;ticket&gt;</code> drops, recreates, creates a DCM project in the clone, plans, deploys and re-plans. The proof of isolation was a real calculation group run in a clone: 267,427 result rows and 93 <code>EXECUTIONS</code> rows in the clone, 0 in INT, and 27 DML statements in query history, all against the clone.</p>
+<p>Two NAIC facts drive this lab. First, <code>CREATE SCHEMA ... CLONE</code> fails when the schema holds hybrid tables (error 392105 in the POC), so the procedure clones with <code>IGNORE HYBRID TABLES</code> and recreates <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> empty from <code>GET_DDL</code>. Second, a cloned Flyway history table "can falsely say the missing hybrid migration already ran", so the target design creates the lifecycle schema and its history fresh in each review clone.</p>
+<p>A working note dated 2026-11-11 recorded pausing DCM. The team has since confirmed that both DCM and Flyway are being implemented. Clones are where the two tools meet developers: Flyway prepares the hybrid objects, DCM deploys the branch's definitions into the clone. The architecture's roadmap calls the pieces "clone bootstrap" (phase 3) and "guarded review clone" (pipeline).</p>
+<p><strong>A rule for this lab:</strong> you write the miniature procedures and script yourself from the descriptions here. Do not copy NAIC files into your sandbox repository, which is public.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+SELECT COUNT(*) AS RESULT_ROWS FROM SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE;
+SELECT COUNT(*) AS EXEC_ROWS   FROM SBX_INT.CALC_SUPPORT.EXECUTIONS;
+SELECT TABLE_NAME, TABLE_OWNER FROM SBX_INT.INFORMATION_SCHEMA.TABLES
+ WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_OWNER &lt;&gt; 'SBX_CICD_PIPELINE';
+SHOW SCHEMAS LIKE 'CALC_DEV_SUPPORT' IN DATABASE SBX_INT;
+</code></pre>
+<p>You should see: two counts (probably <code>0</code> and <code>0</code>; write them down as your <strong>INT baseline</strong>), an empty result for the owner check, and the schema <code>CALC_DEV_SUPPORT</code>.</p>
+<p>Why the owner check: a clone keeps the source objects' owners. The ownership hand-off in this lab only works if every source object is owned by <code>SBX_CICD_PIPELINE</code>. NAIC met this exactly: objects made by <code>SYSADMIN</code> or by another role broke clones until everything was moved to <code>CICD_PIPELINE</code>. If the query returns rows, change the owner (<code>GRANT OWNERSHIP ON TABLE ... TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS</code>) or recreate the object.</p>
+<p>Run in: <strong>Terminal</strong>: <code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH</code> followed by <code>python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json</code>. You should see an empty changeset. If not, finish Lab 4 first.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>Zero-copy clone.</strong> <code>CREATE ... CLONE</code> makes a new object that shares the source's storage. Only metadata is copied at first, so it is fast and costs almost nothing. Storage is added only when the clone or the source changes data afterwards. A clone is independent: writes to it never touch the source.</p>
+<p><strong>Time Travel and retention.</strong> Snowflake keeps old versions of changed data for a number of days (<code>DATA_RETENTION_TIME_IN_DAYS</code>), so you can query the past or <code>UNDROP</code>. Setting it to 0 turns Time Travel off for that object. For a throwaway clone this saves storage, and it means a dropped clone cannot be restored. NAIC's clones use 0, and the refresh script warns that results, drafts and manual metadata edits in the old clone are lost.</p>
+<p><strong>Hybrid tables and clones.</strong> A single hybrid table cannot be cloned. A schema that contains hybrid tables cannot be cloned unless you add <code>IGNORE HYBRID TABLES</code>, which skips them. A database-level clone is documented as supported and copies hybrid data physically, which costs compute in proportion to the data. NAIC chose to skip them and recreate them empty, because a developer clone should not carry live workflow rows.</p>
+<p><strong>Ticket environment.</strong> A short-lived database named from a ticket id (here <code>SBX_DEV_&lt;TICKET&gt;</code>) in which a developer or a pipeline job can run a change end to end without touching INT.</p>
+<p><strong><code>EXECUTE AS OWNER</code>.</strong> A stored procedure normally runs with the caller's rights (caller's rights). With <code>EXECUTE AS OWNER</code> it runs with the rights of the role that owns the procedure. That lets a developer role, which cannot create databases, ask a controlled procedure to do it. The procedure is the gate. The security rule: the only input from the caller is a ticket id that the procedure validates against a fixed pattern, and the procedure builds the database name itself. A caller-supplied database name would let someone drop <code>SBX_INT</code>.</p>
+<p><strong>Redirects.</strong> The engine stores SQL text that names INT objects. In a clone those names must point to the clone. The view <code>ENV_CONFIG</code> holds a map of "from" and "to" prefixes and the function <code>FN_APPLY_REDIRECTS</code> rewrites text with it just before it is executed (you defined both in Lab 3).</p>
+<pre><code> SBX_INT (source)                              SBX_DEV_&lt;TICKET&gt; (clone, retention 0)
+  CALC_SUPPORT  --- clone, IGNORE HYBRID ---&gt;   CALC_SUPPORT   (hybrid tables recreated empty)
+  (SBX_INT_FIN) FIN_CALCULATION --- clone ---&gt; FIN_CALCULATION
+                                                owners handed to SBX_CALC_DEV
+                                                own DCM project object (CLONE target)
+                                                ENV_CONFIG redirects SBX_INT.* to the clone
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> hybrid tables can be cloned only at database level; <code>CREATE HYBRID TABLE ... CLONE</code> fails with error 391411; a schema clone of a schema with hybrid tables fails unless <code>IGNORE HYBRID TABLES</code> is appended; the clause also works on database clones; point-in-time clones support TIMESTAMP and OFFSET but not STATEMENT (https://docs.snowflake.com/en/user-guide/tables-hybrid-clone, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> hybrid tables are not supported in trial accounts, and UNDROP cannot restore hybrid tables (https://docs.snowflake.com/en/user-guide/tables-hybrid-limitations, read 2026-11-16).</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="part-a-clone-by-hand-and-meet-every-trap-about-50-min">Part A: clone by hand and meet every trap (about 50 min)</h3>
+<p>You first do by hand what the procedures will automate, so that each line of the procedures has a reason you have seen.</p>
+<h3 id="step-51-make-an-empty-clone-target-and-try-a-plain-schema-clone">Step 5.1 Make an empty clone target and try a plain schema clone</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>; this role may create databases, see the bootstrap):</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+CREATE DATABASE SBX_DEV_LAB5M DATA_RETENTION_TIME_IN_DAYS = 0 COMMENT = 'Lab 5 manual clone. Safe to drop.';
+CREATE SCHEMA SBX_DEV_LAB5M.CALC_SUPPORT CLONE SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see: in Mode H an error on the last statement because the source schema contains hybrid tables (the NAIC POC saw error 392105; the docs say the clone fails unless <code>IGNORE HYBRID TABLES</code> is used). In Mode S the clone simply succeeds, because the stand-ins are standard tables.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-01]:</strong> the exact error number and text of a schema clone that contains hybrid tables. The docs name error 391411 for a single hybrid-table clone; NAIC recorded 392105 for the schema clone. How to check at lab time: read your own error and paste it into file 13.</p>
+</blockquote>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables">If you are in Mode S (no hybrid tables)</h4>
+<p>This experiment is read-only for you. The docs say a schema clone fails when it contains hybrid tables unless <code>IGNORE HYBRID TABLES</code> is added. You cannot reproduce that in a trial. Read the transcript above and continue; Step 5.2 tests whether the clause is accepted when there are no hybrid tables.</p>
+<h3 id="step-52-clone-with-ignore-hybrid-tables-and-inspect-the-result">Step 5.2 Clone with <code>IGNORE HYBRID TABLES</code> and inspect the result</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CREATE OR REPLACE SCHEMA SBX_DEV_LAB5M.CALC_SUPPORT CLONE SBX_INT.CALC_SUPPORT IGNORE HYBRID TABLES DATA_RETENTION_TIME_IN_DAYS = 0;
+SHOW TABLES IN SCHEMA SBX_DEV_LAB5M.CALC_SUPPORT;
+SHOW SEQUENCES LIKE 'SEQ_CALC_ID' IN SCHEMA SBX_DEV_LAB5M.CALC_SUPPORT;
+SHOW SEQUENCES LIKE 'SEQ_CALC_ID' IN SCHEMA SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see: in Mode H, success, and a table list without <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> (they were skipped). The Flyway history table, <code>CALCULATIONS</code>, <code>CALC_CATEGORIES</code> and the other standard tables are present, owned by <code>SBX_CICD_PIPELINE</code> (a clone keeps the source owners). The two <code>SHOW SEQUENCES</code> rows have the same next value: the clone's sequences continue from INT's current values.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>CREATE OR REPLACE SCHEMA clone_ht_schema CLONE ht_schema IGNORE HYBRID TABLES;</code> is the documented form (https://docs.snowflake.com/en/user-guide/tables-hybrid-clone, read 2026-11-16). The NAIC POC adds that the clause "must come right after the CLONE source", and the example above follows that order.</p>
+<p><strong>TO-CONFIRM [TC-G29]:</strong> in Mode S, whether <code>IGNORE HYBRID TABLES</code> is accepted when the schema has no hybrid tables. How to check at lab time: the statement above. If it is rejected, the procedure in Step 5.7 needs a Mode S variant without the clause. Record the result in file 13.</p>
+</blockquote>
+<p>Now prove independence. Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">INSERT INTO SBX_DEV_LAB5M.CALC_SUPPORT.CALCULATIONS (CALC_NAME, CALC_STATUS) VALUES ('CLONE_ONLY_ROW', 'DRAFT');
+SELECT COUNT(*) FROM SBX_DEV_LAB5M.CALC_SUPPORT.CALCULATIONS WHERE CALC_NAME = 'CLONE_ONLY_ROW';
+SELECT COUNT(*) FROM SBX_INT.CALC_SUPPORT.CALCULATIONS WHERE CALC_NAME = 'CLONE_ONLY_ROW';
+SHOW DCM PROJECTS IN SCHEMA SBX_DEV_LAB5M.CALC_SUPPORT;  -- TO-CONFIRM TC-07-02
+</code></pre>
+<p>You should see: <code>1</code> in the clone and <code>0</code> in INT. The last statement probably lists a cloned <code>CALC_ENGINE_DCM</code> project object. That is why the procedure drops it: the INT project's memory must not survive in a clone, or a plan there would be measured against INT's snapshot.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-02]:</strong> whether a schema clone copies the DCM project object, and the exact <code>SHOW DCM PROJECTS ... IN SCHEMA</code> form. The NAIC procedure contains <code>DROP DCM PROJECT IF EXISTS</code> for the clone, which implies the object is copied. How to check at lab time: run the statement; if the syntax is rejected, use <code>SHOW DCM PROJECTS;</code> and look for the clone's database. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-53-the-flyway-history-trap">Step 5.3 The Flyway history trap</h3>
+<p>Run in: <strong>Terminal</strong> (<code>flyway/</code> folder, environment loaded as in Lab 4). Point Flyway at the clone by changing only the database in the URL:</p>
+<pre><code>cd flyway
+set -a; source .env.flyway; set +a
+export FLYWAY_URL=&quot;${FLYWAY_URL/db=SBX_INT/db=SBX_DEV_LAB5M}&quot;
+export FLYWAY_PLACEHOLDERS_CALC_DB=SBX_DEV_LAB5M
+flyway info
+flyway migrate
+cd ..
+</code></pre>
+<p>You should see: <code>info</code> lists V1 to V4 as <code>Success</code>, and <code>migrate</code> says the schema is up to date. Flyway believes the hybrid tables exist because the cloned history table says V1 and V2 ran. They do not exist in the clone.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables_1">If you are in Mode S (no hybrid tables)</h4>
+<p>Simulate what <code>IGNORE HYBRID TABLES</code> does by dropping one stand-in from the clone first. Run in: <strong>Snowsight worksheet</strong>: <code>DROP TABLE SBX_DEV_LAB5M.CALC_SUPPORT.CALC_AUDIT_EVENT;</code> and then run the Terminal commands above. The trap is the same: history says it ran, the object is missing.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>: now show the consequence.</p>
+<pre><code class="language-sql">INSERT INTO SBX_DEV_LAB5M.CALC_SUPPORT.CALC_AUDIT_EVENT (CALC_ID, EVENT_STATUS) VALUES (2001, 'PENDING');
+</code></pre>
+<p>You should see: an error that the table does not exist. A developer would meet this as a failing feature in a clone while <code>flyway info</code> is green. NAIC's architecture states it as "A cloned history table can falsely say the missing hybrid migration already ran."</p>
+<p>Your options for the fix:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>How</th>
+<th>Cost</th>
+<th>Chosen here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recreate the missing tables from the source DDL, keep the cloned history</td>
+<td><code>GET_DDL</code>, replace the INT prefix, run</td>
+<td>History and objects stay consistent; the DDL comes from INT's live objects, not from Git</td>
+<td><strong>Yes</strong> (matches the NAIC clone procedure)</td>
+</tr>
+<tr>
+<td>Drop the cloned history and run <code>flyway migrate</code> fresh in the clone</td>
+<td>history table removed, all migrations replay</td>
+<td>Tests the migrations themselves (the NAIC target design), but replays every data change</td>
+<td>Described only</td>
+</tr>
+<tr>
+<td><code>flyway repair</code> or <code>baseline</code></td>
+<td>not applicable</td>
+<td><code>repair</code> only fixes checksums and failed rows; it cannot recreate objects</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>Do the first fix by hand (one <code>GET_DDL</code> call per table; a computed name fails with error 1046):</p>
+<pre><code class="language-sql">SELECT GET_DDL('TABLE', 'SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT', TRUE);
+</code></pre>
+<p>Copy the result, replace <code>SBX_INT.</code> with <code>SBX_DEV_LAB5M.</code> everywhere (this also repoints the sequence default to the clone's sequence), and run it. Repeat for <code>CALC_WORKFLOW_STATUS</code> if it is missing. Then repeat the failing insert, which now succeeds, and delete the row.</p>
+<p>You should see: the insert succeeds. Check the default: <code>SELECT GET_DDL('TABLE', 'SBX_DEV_LAB5M.CALC_SUPPORT.CALC_AUDIT_EVENT', TRUE);</code> shows <code>SBX_DEV_LAB5M....SEQ_AUDIT_EVENT_ID.NEXTVAL</code>, not the INT sequence.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G15]:</strong> how a database-level clone behaves when hybrid tables exist and retention is 0. See Step 5.4.</p>
+</blockquote>
+<h3 id="step-54-optional-a-database-level-clone-with-hybrid-tables-mode-h-only">Step 5.4 Optional: a database-level clone with hybrid tables (Mode H only)</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CREATE DATABASE SBX_DEV_LAB5FULL CLONE SBX_INT DATA_RETENTION_TIME_IN_DAYS = 0;
+SELECT TABLE_SCHEMA, TABLE_NAME, IS_HYBRID FROM SBX_DEV_LAB5FULL.INFORMATION_SCHEMA.TABLES WHERE IS_HYBRID = 'YES';
+DROP DATABASE SBX_DEV_LAB5FULL;
+</code></pre>
+<p>You should see: the docs say a database clone copies hybrid data physically, so the hybrid tables should appear in the clone. Write down whether they did, and whether retention 0 caused any error. Drop it at once; it also copied every other schema in <code>SBX_INT</code>.</p>
+<p>Why NAIC still skips hybrid tables: a physical copy costs compute in proportion to the data and would carry live workflow rows into a developer clone.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G15]:</strong> the observed result. Record it in file 13.</p>
+</blockquote>
+<h3 id="step-55-retention-0-means-no-way-back">Step 5.5 Retention 0 means no way back</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">DROP DATABASE SBX_DEV_LAB5M;
+UNDROP DATABASE SBX_DEV_LAB5M;
+</code></pre>
+<p>You should see: the second statement fails (or finds nothing to restore), because retention was 0. If you want to see the contrast, create a throwaway database with the default retention, drop it, and undrop it. Write down which behaviour you saw and the exact error. In a real clone refresh this is why the script says "results, drafts and manual metadata edits in the old clone are lost".</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-03]:</strong> the exact UNDROP error text with retention 0. Record it in file 13. Hybrid tables cannot be undropped at all, so retention does not matter for them.</p>
+</blockquote>
+<h3 id="part-b-the-guarded-procedures-about-50-min">Part B: the guarded procedures (about 50 min)</h3>
+<h3 id="step-56-why-a-developer-cannot-just-create-a-clone-and-what-the-procedure-is-for">Step 5.6 Why a developer cannot just create a clone, and what the procedure is for</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> as the developer role:</p>
+<pre><code class="language-sql">USE ROLE SBX_CALC_DEV;
+CREATE DATABASE SBX_DEV_NOPE;
+</code></pre>
+<p>You should see: an insufficient-privileges error. The developer role has no <code>CREATE DATABASE</code> on the account (only the pipeline role has it, as in NAIC where only the proc owner can create databases). The procedure is the controlled door: the developer gets <code>USAGE</code> on the procedure, not the privilege behind it.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-04]:</strong> the exact error text. Record it in file 13.</p>
+</blockquote>
+<h3 id="step-57-write-and-deploy-the-clone-procedures">Step 5.7 Write and deploy the clone procedures</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>sql/clone_support/calc_dev_clone_procs.sql</code>. The procedures follow the structure of the NAIC procedures: validate the ticket, refuse an existing database, create it with retention 0, clone both schemas, drop the cloned DCM project, recreate hybrid tables empty, hand ownership to the developer role, return a status object, and on any error drop the half-built database only if this call created it.</p>
+<pre><code class="language-sql">-- Deploy with: snow sql -c sbx_owner --role SBX_CICD_PIPELINE -f sql/clone_support/calc_dev_clone_procs.sql
+-- Clone-support objects are not owned by DCM or Flyway in the sandbox (see file 06, decision table).
+USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+CREATE OR REPLACE PROCEDURE SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE(P_TICKET VARCHAR)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    e_bad_ticket EXCEPTION (-20001, 'Ticket must be 1-40 letters or digits');
+    e_exists     EXCEPTION (-20002, 'Clone database already exists; drop it first or use a different ticket');
+    v_db      VARCHAR;
+    v_info    VARCHAR;
+    v_q       VARCHAR;
+    v_sql     VARCHAR;
+    v_ddl     VARCHAR;
+    v_n       NUMBER;
+    v_created BOOLEAN DEFAULT FALSE;
+    v_steps   ARRAY DEFAULT ARRAY_CONSTRUCT();
+    v_res     RESULTSET;
+BEGIN
+    -- 1. validate: the only caller input is a ticket id with a fixed shape
+    IF (:P_TICKET IS NULL OR NOT REGEXP_LIKE(:P_TICKET, '^[A-Za-z0-9]{1,40}$')) THEN
+        RAISE e_bad_ticket;
+    END IF;
+    v_db := 'SBX_DEV_' || UPPER(:P_TICKET);
+
+    -- 2. refuse to touch an existing database (never drop what we did not create)
+    EXECUTE IMMEDIATE 'SHOW DATABASES LIKE ''' || :v_db || '''';
+    SELECT COUNT(*) INTO :v_n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE &quot;name&quot; = :v_db;
+    IF (:v_n &gt; 0) THEN
+        RAISE e_exists;
+    END IF;
+
+    -- 3. create the database with retention 0, then clone both schemas
+    EXECUTE IMMEDIATE 'CREATE DATABASE ' || :v_db || ' DATA_RETENTION_TIME_IN_DAYS = 0 COMMENT = ''Ticket clone of SBX_INT. Safe to drop.''';
+    v_created := TRUE;
+    v_steps := ARRAY_APPEND(:v_steps, 'database created');
+    EXECUTE IMMEDIATE 'DROP SCHEMA IF EXISTS ' || :v_db || '.PUBLIC';
+    EXECUTE IMMEDIATE 'CREATE SCHEMA ' || :v_db || '.CALC_SUPPORT CLONE SBX_INT.CALC_SUPPORT IGNORE HYBRID TABLES DATA_RETENTION_TIME_IN_DAYS = 0';
+    EXECUTE IMMEDIATE 'CREATE SCHEMA ' || :v_db || '.FIN_CALCULATION CLONE SBX_INT_FIN.FIN_CALCULATION DATA_RETENTION_TIME_IN_DAYS = 0';
+    v_steps := ARRAY_APPEND(:v_steps, 'schemas cloned');
+
+    -- 4. the cloned INT project must not live on in the clone
+    EXECUTE IMMEDIATE 'DROP DCM PROJECT IF EXISTS ' || :v_db || '.CALC_SUPPORT.CALC_ENGINE_DCM';
+
+    -- 5. recreate hybrid tables empty (GET_DDL needs a constant name, so one call per table)
+    SELECT COUNT(*) INTO :v_n FROM SBX_INT.INFORMATION_SCHEMA.TABLES
+     WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME = 'CALC_AUDIT_EVENT' AND IS_HYBRID = 'YES';
+    IF (:v_n &gt; 0) THEN
+        SELECT GET_DDL('TABLE', 'SBX_INT.CALC_SUPPORT.CALC_AUDIT_EVENT', TRUE) INTO :v_ddl;
+        v_ddl := REPLACE(:v_ddl, 'SBX_INT.', :v_db || '.');
+        EXECUTE IMMEDIATE :v_ddl;
+        v_steps := ARRAY_APPEND(:v_steps, 'CALC_AUDIT_EVENT recreated empty');
+    END IF;
+    SELECT COUNT(*) INTO :v_n FROM SBX_INT.INFORMATION_SCHEMA.TABLES
+     WHERE TABLE_SCHEMA = 'CALC_SUPPORT' AND TABLE_NAME = 'CALC_WORKFLOW_STATUS' AND IS_HYBRID = 'YES';
+    IF (:v_n &gt; 0) THEN
+        SELECT GET_DDL('TABLE', 'SBX_INT.CALC_SUPPORT.CALC_WORKFLOW_STATUS', TRUE) INTO :v_ddl;
+        v_ddl := REPLACE(:v_ddl, 'SBX_INT.', :v_db || '.');
+        EXECUTE IMMEDIATE :v_ddl;
+        v_steps := ARRAY_APPEND(:v_steps, 'CALC_WORKFLOW_STATUS recreated empty');
+    END IF;
+
+    -- 6. hand ownership of every object to the developer role, then the schemas, then database usage
+    v_info := :v_db || '.INFORMATION_SCHEMA.';
+    v_q := 'SELECT ''TABLE'' AS K, TABLE_SCHEMA AS S, TABLE_NAME AS N, '''' AS A FROM ' || :v_info || 'TABLES'
+        || ' WHERE TABLE_SCHEMA &lt;&gt; ''INFORMATION_SCHEMA'' AND TABLE_TYPE = ''BASE TABLE'''
+        || ' UNION ALL SELECT ''VIEW'', TABLE_SCHEMA, TABLE_NAME, '''' FROM ' || :v_info || 'VIEWS'
+        || ' WHERE TABLE_SCHEMA &lt;&gt; ''INFORMATION_SCHEMA'''
+        || ' UNION ALL SELECT ''SEQUENCE'', SEQUENCE_SCHEMA, SEQUENCE_NAME, '''' FROM ' || :v_info || 'SEQUENCES'
+        || ' WHERE SEQUENCE_SCHEMA &lt;&gt; ''INFORMATION_SCHEMA'''
+        || ' UNION ALL SELECT ''FUNCTION'', FUNCTION_SCHEMA, FUNCTION_NAME, REGEXP_REPLACE(ARGUMENT_SIGNATURE, ''[A-Za-z0-9_]+ '', '''') FROM ' || :v_info || 'FUNCTIONS'
+        || ' WHERE FUNCTION_SCHEMA &lt;&gt; ''INFORMATION_SCHEMA'''
+        || ' UNION ALL SELECT ''PROCEDURE'', PROCEDURE_SCHEMA, PROCEDURE_NAME, REGEXP_REPLACE(ARGUMENT_SIGNATURE, ''[A-Za-z0-9_]+ '', '''') FROM ' || :v_info || 'PROCEDURES'
+        || ' WHERE PROCEDURE_SCHEMA &lt;&gt; ''INFORMATION_SCHEMA''';
+    v_res := (EXECUTE IMMEDIATE :v_q);
+    FOR rec IN v_res DO
+        v_sql := 'GRANT OWNERSHIP ON ' || rec.K || ' ' || :v_db || '.' || rec.S || '.' || rec.N || rec.A
+              || ' TO ROLE SBX_CALC_DEV REVOKE CURRENT GRANTS';
+        EXECUTE IMMEDIATE :v_sql;
+    END FOR;
+    EXECUTE IMMEDIATE 'GRANT OWNERSHIP ON SCHEMA ' || :v_db || '.CALC_SUPPORT TO ROLE SBX_CALC_DEV REVOKE CURRENT GRANTS';
+    EXECUTE IMMEDIATE 'GRANT OWNERSHIP ON SCHEMA ' || :v_db || '.FIN_CALCULATION TO ROLE SBX_CALC_DEV REVOKE CURRENT GRANTS';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON DATABASE ' || :v_db || ' TO ROLE SBX_CALC_DEV';
+    v_steps := ARRAY_APPEND(:v_steps, 'ownership handed to SBX_CALC_DEV');
+
+    RETURN OBJECT_CONSTRUCT('status', 'SUCCESS', 'database', :v_db, 'steps', :v_steps,
+                            'next', 'snow dcm create + plan + deploy with the CLONE target');
+EXCEPTION
+    WHEN OTHER THEN
+        IF (:v_created) THEN
+            EXECUTE IMMEDIATE 'DROP DATABASE IF EXISTS ' || :v_db;
+        END IF;
+        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'sqlcode', SQLCODE, 'sqlerrm', SQLERRM, 'cleaned_up', :v_created);
+END;
+$$;
+</code></pre>
+<p>Read it with these questions. Where is the caller's text used? Only in the regex test and in <code>UPPER(:P_TICKET)</code> after it passed. Why does the existence check come before <code>CREATE DATABASE</code>? So that the error path can never drop a database somebody else made. Why one <code>GET_DDL</code> call per table? A computed name fails with error 1046. Why <code>REVOKE CURRENT GRANTS</code> on the ownership transfer? So the clone's objects carry only the developer role's grants, not the pipeline's. Why does the pipeline role need <code>SBX_CALC_DEV</code> granted to it (bootstrap hierarchy)? Since the 2026_07 bundle (BCR-2395) ownership can only be transferred to a role that is active in the session or by a role with <code>MANAGE GRANTS</code>; inherited roles count as available inside an owner's-rights procedure, and <code>MANAGE GRANTS</code> was judged too broad.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-05]:</strong> two syntax points in this procedure that were written from the Snowflake Scripting language without a public page being checked: (a) <code>FOR rec IN v_res DO ... END FOR;</code> over a <code>RESULTSET</code> variable. Fallback: <code>LET c CURSOR FOR v_res;</code> followed by <code>FOR rec IN c DO</code>. (b) the <code>REGEXP_REPLACE</code> that turns <code>(P_X VARCHAR, P_Y NUMBER)</code> into <code>(VARCHAR, NUMBER)</code> for <code>GRANT OWNERSHIP ON PROCEDURE</code>. How to check at lab time: if the hand-off step fails, read <code>sqlerrm</code> in the returned object; if the types come out wrong, query <code>INFORMATION_SCHEMA.PROCEDURES</code> and look at <code>ARGUMENT_SIGNATURE</code>. The NAIC procedure takes the same job from <code>SHOW PROCEDURES</code> output instead; its tested form is in the POC branch if you ever need it for reference. Record what you changed in file 13.</p>
+<p><strong>TO-CONFIRM [TC-G29]:</strong> <code>IGNORE HYBRID TABLES</code> in step 3 must be accepted when the schema has no hybrid tables (Mode S). If Step 5.2 showed it is rejected, remove the clause in the Mode S copy of this file.</p>
+</blockquote>
+<p>Append the drop procedure and the grants to the same file. The database prefix is fixed in the procedure, so only <code>SBX_DEV_</code> databases can ever be dropped. The ticket pattern forbids underscores, so no ticket can ever name the placeholder <code>SBX_DEV_SET_ON_CLI</code>.</p>
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE(P_TICKET VARCHAR)
+RETURNS VARIANT
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    e_bad_ticket EXCEPTION (-20001, 'Ticket must be 1-40 letters or digits');
+    v_db VARCHAR;
+    v_n  NUMBER;
+BEGIN
+    IF (:P_TICKET IS NULL OR NOT REGEXP_LIKE(:P_TICKET, '^[A-Za-z0-9]{1,40}$')) THEN
+        RAISE e_bad_ticket;
+    END IF;
+    v_db := 'SBX_DEV_' || UPPER(:P_TICKET);
+    EXECUTE IMMEDIATE 'SHOW DATABASES LIKE ''' || :v_db || '''';
+    SELECT COUNT(*) INTO :v_n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE &quot;name&quot; = :v_db;
+    IF (:v_n = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'NOT_FOUND', 'database', :v_db);
+    END IF;
+    EXECUTE IMMEDIATE 'DROP DATABASE ' || :v_db;
+    RETURN OBJECT_CONSTRUCT('status', 'DROPPED', 'database', :v_db);
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'sqlcode', SQLCODE, 'sqlerrm', SQLERRM);
+END;
+$$;
+
+GRANT USAGE ON PROCEDURE SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE(VARCHAR) TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON PROCEDURE SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE(VARCHAR) TO ROLE SBX_CALC_DEV;
+</code></pre>
+<p>The grants sit in the file because <code>CREATE OR REPLACE</code> removes grants every time (the lesson from Lab 1). NAIC's file does the same.</p>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow sql -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH -f sql/clone_support/calc_dev_clone_procs.sql
+</code></pre>
+<p>You should see: a "successfully created" line for each procedure and two grant results. This is plain SQL deployment with <code>snow sql</code>, which is also how NAIC deployed procedures from a laptop before DCM.</p>
+<h3 id="step-58-test-the-gate-with-harmless-bad-input">Step 5.8 Test the gate with harmless bad input</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, as the developer role:</p>
+<pre><code class="language-sql">USE ROLE SBX_CALC_DEV;
+USE WAREHOUSE SBX_CALC_WH;
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('SBX_INT.X');
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('NOPE; SELECT 1');
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('');
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE(NULL);
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('NOSUCHTICKET');
+</code></pre>
+<p>Also call it with a 41-letter ticket (type 41 letters <code>A</code> yourself).</p>
+<p>You should see: the four invalid inputs and the 41-letter one return <code>status ERROR</code> with <code>sqlcode -20001</code> and the message "Ticket must be 1-40 letters or digits", before any SQL was built, and <code>NOSUCHTICKET</code> returns <code>NOT_FOUND</code>. Never test with a real database name such as <code>SBX_INT</code>. The NAIC team recorded the same decision, and used these same kinds of payloads.</p>
+<h3 id="step-59-create-a-ticket-clone-read-the-result">Step 5.9 Create a ticket clone, read the result</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, as the developer role:</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE('LAB5A');
+</code></pre>
+<p>You should see: a <code>status</code> of <code>SUCCESS</code>, <code>database</code> <code>SBX_DEV_LAB5A</code> and the list of steps. If you see <code>ERROR</code>, read <code>sqlerrm</code>: it is the message of the statement that failed, and <code>cleaned_up</code> tells you the half-built database was removed. Fix the cause and call again.</p>
+<p>Verify the result. Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SHOW SCHEMAS IN DATABASE SBX_DEV_LAB5A;
+SHOW TABLES IN SCHEMA SBX_DEV_LAB5A.CALC_SUPPORT;
+SELECT TABLE_NAME, TABLE_OWNER, IS_HYBRID FROM SBX_DEV_LAB5A.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CALC_SUPPORT';
+SELECT COUNT(*) FROM SBX_DEV_LAB5A.CALC_SUPPORT.CALC_AUDIT_EVENT;
+SHOW PARAMETERS LIKE 'DATA_RETENTION_TIME_IN_DAYS' IN DATABASE SBX_DEV_LAB5A;
+</code></pre>
+<p>You should see: schemas <code>CALC_SUPPORT</code> and <code>FIN_CALCULATION</code> (no <code>PUBLIC</code>), every table owned by <code>SBX_CALC_DEV</code>, the hybrid pair back and empty (Mode H) or the stand-ins (Mode S), and retention <code>0</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G15]:</strong> record whether the recreated hybrid tables behave exactly like INT's: <code>SHOW INDEXES IN TABLE SBX_DEV_LAB5A.CALC_SUPPORT.CALC_AUDIT_EVENT;</code> should list the secondary index.</p>
+</blockquote>
+<p>Run in: <strong>Snowsight worksheet</strong>: confirm that a second call with the same ticket is refused and does not damage the first clone.</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE('lab5a');
+SELECT COUNT(*) FROM SBX_DEV_LAB5A.CALC_SUPPORT.CALCULATIONS;
+</code></pre>
+<p>You should see: <code>ERROR</code> with <code>sqlcode -20002</code> (the ticket is upper-cased, so it names the same database), <code>cleaned_up</code> false, and the clone still queryable.</p>
+<h3 id="part-c-put-a-branchs-definitions-into-the-clone-and-prove-isolation-about-50-min">Part C: put a branch's definitions into the clone and prove isolation (about 50 min)</h3>
+<h3 id="step-510-deploy-the-dcm-definitions-into-the-clone">Step 5.10 Deploy the DCM definitions into the clone</h3>
+<p>The clone has no DCM project (the procedure dropped the cloned one). Create one inside the clone, plan with the CLONE target, and deploy. The CLONE target's project owner is <code>SBX_CALC_DEV</code>, which now owns every object in the clone, so adoption works.</p>
+<p>Run in: <strong>Terminal</strong> (repository root):</p>
+<pre><code>snow dcm create SBX_DEV_LAB5A.CALC_SUPPORT.CALC_ENGINE_DCM --target CLONE --from dcm/calc_engine -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH
+snow dcm plan SBX_DEV_LAB5A.CALC_SUPPORT.CALC_ENGINE_DCM --target CLONE -D &quot;calc_db='SBX_DEV_LAB5A'&quot; -D &quot;fin_db='SBX_DEV_LAB5A'&quot; --from dcm/calc_engine --save-output -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>Why the explicit project name and the two <code>-D</code> values: the manifest is not rendered, so its CLONE <code>project_name</code> is the placeholder <code>SBX_DEV_SET_ON_CLI....</code>. That database does not exist, so forgetting the project name fails instead of touching INT. In the same way, forgetting <code>-D</code> leaves <code>calc_db</code> at <code>SBX_DEV_SET_ON_CLI</code> and the plan fails. The quotes inside the <code>-D</code> value are required (error 1510 in NAIC without them).</p>
+<p>You should see: no DROP. The entries are mostly adoption, plus real changes: the view <code>ENV_CONFIG</code> (the clone variant has redirects), and the GRANT entries from <code>access.sql</code> (the ownership hand-off used <code>REVOKE CURRENT GRANTS</code>, so the app-role grants have to be declared again). In the NAIC POC the first clone plan was 70 entities, 0 create, 70 alter, 0 drop, with 69 adoption-only and exactly one real change (<code>ENV_CONFIG</code>).</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-06]:</strong> the exact count and kinds of entries in your first clone plan. Record them in file 13. Any DROP, or any change to a table, is a stop sign: read it before deploying.</p>
+</blockquote>
+<p>Deploy and re-plan:</p>
+<pre><code>snow dcm deploy SBX_DEV_LAB5A.CALC_SUPPORT.CALC_ENGINE_DCM --target CLONE -D &quot;calc_db='SBX_DEV_LAB5A'&quot; -D &quot;fin_db='SBX_DEV_LAB5A'&quot; --from dcm/calc_engine --alias lab5a-initial -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH
+snow dcm plan SBX_DEV_LAB5A.CALC_SUPPORT.CALC_ENGINE_DCM --target CLONE -D &quot;calc_db='SBX_DEV_LAB5A'&quot; -D &quot;fin_db='SBX_DEV_LAB5A'&quot; --from dcm/calc_engine --save-output -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: <code>EMPTY changeset</code>. Check that the INT project was not touched: <code>snow dcm plan --target INT ...</code> as in Lab 4 is still empty.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Replace the project work with one worksheet statement as <code>SBX_CALC_DEV</code>: <code>CREATE OR REPLACE VIEW SBX_DEV_LAB5A.CALC_SUPPORT.ENV_CONFIG (CONFIG_KEY, CONFIG_VALUE) AS ...</code> using the clone variant of the three rows (set <code>HOME_SCHEMA</code> and <code>RESULT_SCHEMA</code> to the clone, and <code>SCHEMA_REDIRECTS</code> to the two-entry map). It is the only real difference. Re-create the app-role grants by hand.</p>
+<h3 id="step-511-see-the-redirects">Step 5.11 See the redirects</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT CONFIG_KEY, CONFIG_VALUE FROM SBX_INT.CALC_SUPPORT.ENV_CONFIG;
+SELECT CONFIG_KEY, CONFIG_VALUE FROM SBX_DEV_LAB5A.CALC_SUPPORT.ENV_CONFIG;
+SELECT SBX_DEV_LAB5A.CALC_SUPPORT.FN_APPLY_REDIRECTS(
+  'INSERT INTO SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE SELECT 1',
+  (SELECT CONFIG_VALUE::ARRAY FROM SBX_DEV_LAB5A.CALC_SUPPORT.ENV_CONFIG WHERE CONFIG_KEY = 'SCHEMA_REDIRECTS'));
+</code></pre>
+<p>You should see: in INT the <code>SCHEMA_REDIRECTS</code> value is <code>[]</code>; in the clone it has two <code>from</code>/<code>to</code> entries; and the function turns <code>SBX_INT_FIN.FIN_CALCULATION.</code> into <code>SBX_DEV_LAB5A.FIN_CALCULATION.</code> inside the text.</p>
+<p>This is the mechanism that makes a clone write to itself. The engine's generated SQL names INT objects, and the redirect rewrites them at run time. The CLONE target derives the map from <code>calc_db</code> through <code>clone_redirects: true</code>, so nobody can forget to pass it; NAIC rejected a design where the JSON map was passed on the command line because forgetting it silently left redirects off.</p>
+<h3 id="step-512-prove-zero-writes-to-the-source">Step 5.12 Prove zero writes to the source</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>scripts/assert_zero_int_writes.sql</code>. It compares the INT row counts you recorded as the baseline with the current counts and raises an error when they differ:</p>
+<pre><code class="language-sql">-- Usage: snow sql -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH -f scripts/assert_zero_int_writes.sql -D before_results=&lt;n&gt; -D before_exec=&lt;n&gt;
+EXECUTE IMMEDIATE $$
+DECLARE
+    e_leak EXCEPTION (-20020, 'INT was written to during the clone test');
+    v_results NUMBER;
+    v_exec    NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO :v_results FROM SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE;
+    SELECT COUNT(*) INTO :v_exec FROM SBX_INT.CALC_SUPPORT.EXECUTIONS;
+    IF (:v_results &lt;&gt; &lt;% before_results %&gt; OR :v_exec &lt;&gt; &lt;% before_exec %&gt;) THEN
+        RAISE e_leak;
+    END IF;
+    RETURN 'PASS: INT row counts unchanged';
+END;
+$$;
+</code></pre>
+<p>Create <code>scripts/smoke_clone.sql</code>. It refuses to run against anything that is not an <code>SBX_DEV_</code> database, registers a draft calculation in the clone and runs the miniature compute procedure there. The name is deliberately not <code>SP_RUN_...</code>:</p>
+<pre><code class="language-sql">-- Usage: snow sql -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH -f scripts/smoke_clone.sql -D clone_db=SBX_DEV_&lt;TICKET&gt;
+EXECUTE IMMEDIATE $$
+DECLARE
+    e_wrong_target EXCEPTION (-20030, 'Smoke tests may only run in an SBX_DEV_ clone');
+    v_id VARCHAR;
+BEGIN
+    IF (NOT STARTSWITH('&lt;% clone_db %&gt;', 'SBX_DEV_')) THEN
+        RAISE e_wrong_target;
+    END IF;
+    CALL &lt;% clone_db %&gt;.CALC_SUPPORT.SP_REGISTER_CALCULATION('SMOKE_CALC', CURRENT_USER()) INTO :v_id;
+    CALL &lt;% clone_db %&gt;.CALC_SUPPORT.SP_COMPUTE_MINI_RESULT(:v_id::NUMBER, NULL);
+    RETURN 'smoke ok for calc ' || :v_id;
+END;
+$$;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-07]:</strong> that <code>snow sql</code> accepts <code>-D name=value</code> with the <code>&lt;% name %&gt;</code> template form inside the file. How to check at lab time: <code>snow sql --help</code> and one run. Fallback: edit the numbers and the clone name into a temporary copy of the file by hand. Record the result in file 13.</p>
+</blockquote>
+<p>Run the two scripts. Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow sql -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH -f scripts/smoke_clone.sql -D clone_db=SBX_DEV_LAB5A
+snow sql -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH -f scripts/assert_zero_int_writes.sql -D before_results=&lt;RESULT_ROWS&gt; -D before_exec=&lt;EXEC_ROWS&gt;
+</code></pre>
+<p>Replace the two placeholders with your INT baseline from Section 3.</p>
+<p>You should see: <code>smoke ok for calc &lt;id&gt;</code> and then <code>PASS: INT row counts unchanged</code>.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>: check the clone side, and the history.</p>
+<pre><code class="language-sql">SELECT COUNT(*) FROM SBX_DEV_LAB5A.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE;
+SELECT COUNT(*) FROM SBX_DEV_LAB5A.CALC_SUPPORT.EXECUTIONS;
+SELECT QUERY_TYPE, LEFT(QUERY_TEXT, 120) AS QUERY_START
+  FROM TABLE(SBX_INT.INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT =&gt; 200))
+ WHERE QUERY_TYPE IN ('INSERT', 'UPDATE', 'DELETE', 'MERGE')
+   AND START_TIME &gt; DATEADD(minute, -30, CURRENT_TIMESTAMP())
+ ORDER BY START_TIME;
+</code></pre>
+<p>You should see: <code>1</code> result row and <code>1</code> execution row in the clone, and a list of DML statements whose text names the clone and not <code>SBX_INT_FIN</code>. (<code>SBX_INT_FIN.FIN_CALCULATION...</code> appears only inside the string that the procedure rewrote; read the statements that actually ran.) This is the sandbox version of the NAIC proof: counts in the clone, none in INT, and every DML statement against the clone.</p>
+<p>Limits of the proof, to write in your notes: a row count cannot detect an <code>UPDATE</code> or <code>DELETE</code> in INT that leaves the count unchanged, and the query-history function only returns what your role can see. The strongest protection is not the check but the grants: <code>SBX_CALC_DEV</code> has only <code>SELECT</code> on the INT result table, so a write that escaped redirection would fail outright. The Break it section shows this.</p>
+<h3 id="step-513-automate-it-scriptsrefresh_dev_clonesh">Step 5.13 Automate it: <code>scripts/refresh_dev_clone.sh</code></h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>scripts/refresh_dev_clone.sh</code> (the same five steps as the NAIC script: validate the ticket, confirm, drop, create, create the project, plan, deploy, re-plan):</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# Usage: scripts/refresh_dev_clone.sh &lt;ticket&gt; [--yes] [--deploy-only]
+# Drops and recreates SBX_DEV_&lt;TICKET&gt;, deploys dcm/calc_engine into it, and requires an empty re-plan.
+# --deploy-only keeps the clone and its data and only plans and deploys.
+set -euo pipefail
+
+TICKET=&quot;${1:-}&quot;
+shift || true
+ASSUME_YES=false
+DEPLOY_ONLY=false
+for arg in &quot;$@&quot;; do
+  case &quot;$arg&quot; in
+    --yes) ASSUME_YES=true ;;
+    --deploy-only) DEPLOY_ONLY=true ;;
+    *) echo &quot;Unknown option: $arg&quot; &gt;&amp;2; exit 2 ;;
+  esac
+done
+if [[ ! &quot;$TICKET&quot; =~ ^[A-Za-z0-9]{1,40}$ ]]; then
+  echo &quot;Ticket must be 1-40 letters or digits&quot; &gt;&amp;2
+  exit 2
+fi
+TICKET=&quot;$(echo &quot;$TICKET&quot; | tr '[:lower:]' '[:upper:]')&quot;
+
+SNOW=&quot;${SNOW_BIN:-snow}&quot;
+CONN=&quot;${SNOW_CONNECTION:-sbx_dev}&quot;
+ROLE=&quot;${CALC_DEV_ROLE:-SBX_CALC_DEV}&quot;
+WH=&quot;${CALC_WAREHOUSE:-SBX_CALC_WH}&quot;
+DCM_MODE=&quot;${DCM_MODE:-on}&quot;
+PLAN_FILE=&quot;${PLAN_FILE:-plan_result.json}&quot;   # TO-CONFIRM TC-G04: real file name
+SRC=&quot;dcm/calc_engine&quot;
+CLONE_DB=&quot;SBX_DEV_${TICKET}&quot;
+PROJECT=&quot;${CLONE_DB}.CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+COMMON=(-c &quot;$CONN&quot; --role &quot;$ROLE&quot; --warehouse &quot;$WH&quot;)
+VARS=(-D &quot;calc_db='${CLONE_DB}'&quot; -D &quot;fin_db='${CLONE_DB}'&quot;)
+
+confirm() {
+  if $ASSUME_YES; then return 0; fi
+  read -r -p &quot;$1 [y/N] &quot; answer
+  [[ &quot;$answer&quot; == &quot;y&quot; || &quot;$answer&quot; == &quot;Y&quot; ]]
+}
+call_proc() {
+  &quot;$SNOW&quot; sql &quot;${COMMON[@]}&quot; --format json -q &quot;CALL SBX_INT.CALC_DEV_SUPPORT.$1('${TICKET}')&quot;
+}
+run_plan() {
+  &quot;$SNOW&quot; dcm plan &quot;$PROJECT&quot; --target CLONE &quot;${VARS[@]}&quot; --from &quot;$SRC&quot; --save-output &quot;${COMMON[@]}&quot;
+}
+plan_is_empty() {
+  python3 - &quot;$SRC/out/$PLAN_FILE&quot; &lt;&lt;'PY'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+sys.exit(0 if not plan.get(&quot;changeset&quot;) else 1)
+PY
+}
+
+echo &quot;Target clone: $CLONE_DB&quot;
+if ! $DEPLOY_ONLY; then
+  echo &quot;WARNING: results, drafts and manual edits in $CLONE_DB will be lost. Retention is 0, so there is no UNDROP.&quot;
+  confirm &quot;Drop and recreate $CLONE_DB?&quot; || { echo &quot;Cancelled&quot;; exit 1; }
+  out=&quot;$(call_proc DROP_CALC_DEV_CLONE)&quot;; echo &quot;$out&quot;
+  if echo &quot;$out&quot; | grep -Eq 'status[^A-Za-z]+ERROR'; then echo &quot;Drop failed&quot; &gt;&amp;2; exit 1; fi
+  out=&quot;$(call_proc CREATE_CALC_DEV_CLONE)&quot;; echo &quot;$out&quot;
+  if echo &quot;$out&quot; | grep -Eq 'status[^A-Za-z]+ERROR'; then echo &quot;Create failed&quot; &gt;&amp;2; exit 1; fi
+  if [[ &quot;$DCM_MODE&quot; == &quot;off&quot; ]]; then echo &quot;DCM_MODE=off: stopping after clone creation&quot;; exit 0; fi
+  &quot;$SNOW&quot; dcm create &quot;$PROJECT&quot; --target CLONE --from &quot;$SRC&quot; &quot;${COMMON[@]}&quot;
+fi
+
+run_plan
+if plan_is_empty; then echo &quot;No changes: the clone matches the definitions&quot;; exit 0; fi
+confirm &quot;Deploy these changes to $CLONE_DB?&quot; || { echo &quot;Cancelled&quot;; exit 1; }
+SHA=&quot;$(git rev-parse --short HEAD 2&gt;/dev/null || echo nogit)&quot;
+&quot;$SNOW&quot; dcm deploy &quot;$PROJECT&quot; --target CLONE &quot;${VARS[@]}&quot; --from &quot;$SRC&quot; --alias &quot;refresh-${TICKET}-${SHA}&quot; &quot;${COMMON[@]}&quot;
+run_plan
+plan_is_empty || { echo &quot;Re-plan is not empty: investigate before using this clone&quot; &gt;&amp;2; exit 1; }
+echo &quot;Clone $CLONE_DB is in sync.&quot;
+</code></pre>
+<p>The script uses <code>git rev-parse</code> only to read a short commit id for the deployment alias. It makes no change to the repository.</p>
+<p>Run in: <strong>Terminal</strong>: <code>chmod +x scripts/refresh_dev_clone.sh</code>, then <code>scripts/refresh_dev_clone.sh LAB5A --deploy-only</code> first. You should see the plan report "No changes". Then run the full refresh: <code>scripts/refresh_dev_clone.sh LAB5A</code>, answer <code>y</code> twice. You should see the drop, the create, the project creation, a non-empty first plan, a deploy with alias <code>refresh-LAB5A-&lt;sha&gt;</code>, and <code>Clone SBX_DEV_LAB5A is in sync.</code></p>
+<p>Timing for orientation: in NAIC a full refresh took about 5 minutes, mostly because of the size of the real engine; yours takes a minute or two.</p>
+<h3 id="step-514-clean-up-the-ticket-clone">Step 5.14 Clean up the ticket clone</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, as the developer role:</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('LAB5A');
+SHOW DATABASES LIKE 'SBX_DEV_%';
+</code></pre>
+<p>You should see: <code>DROPPED</code>, and no <code>SBX_DEV_</code> database in the list (the manual ones from Steps 5.1 to 5.5 are already gone).</p>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Why is a clone almost free, and when does it start to cost storage?</li>
+<li>What does <code>DATA_RETENTION_TIME_IN_DAYS = 0</code> take away from a clone?</li>
+<li>Why is a developer-supplied database name unsafe in a procedure that drops databases, and how does the ticket pattern prevent it?</li>
+<li>Why does <code>EXECUTE AS OWNER</code> let a developer create a database that the developer role cannot create directly?</li>
+<li>What is the Flyway history trap, and which fix does this lab use?</li>
+<li>Why must the cloned DCM project object be dropped inside the clone?</li>
+<li>Which three things make it hard for a clone run to write to INT by accident?</li>
+<li>What can the row-count check not detect?</li>
+</ol>
+<details>
+<summary>Answers</summary>
+
+1. It shares storage with the source and copies only metadata. It costs storage once data in either side changes.
+2. Time Travel and `UNDROP`. A dropped clone cannot be restored.
+3. A caller-supplied name could be `SBX_INT`. The pattern allows only letters and digits and the procedure adds the fixed `SBX_DEV_` prefix itself, so only `SBX_DEV_` databases can be named.
+4. The procedure runs with the rights of its owner (`SBX_CICD_PIPELINE`), which can create databases. The developer role only holds `USAGE` on the procedure.
+5. The cloned history says the hybrid migrations ran, but the tables were skipped. The lab recreates the tables from INT's `GET_DDL` and keeps the history.
+6. It would carry INT's snapshot of managed objects, so plans in the clone would be measured against the wrong state.
+7. The redirect map derived from `calc_db`, the safety placeholder database in the CLONE target, and grants that give the developer role only `SELECT` on INT's tables.
+8. An update or delete that leaves the row count unchanged, and writes to other tables.
+
+</details>
+
+<h2 id="7-break-it">7. Break it</h2>
+<p>Scenario: the redirects are forgotten, so generated SQL still names INT.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (create a clone first: <code>CALL SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE('LAB5B');</code> and deploy the definitions as in Step 5.10, using <code>-D "calc_db='SBX_DEV_LAB5B'" -D "fin_db='SBX_DEV_LAB5B'"</code> and the project <code>SBX_DEV_LAB5B.CALC_SUPPORT.CALC_ENGINE_DCM</code>). Then as <code>SBX_CALC_DEV</code> replace the redirect map in the clone by hand:</p>
+<pre><code class="language-sql">CREATE OR REPLACE VIEW SBX_DEV_LAB5B.CALC_SUPPORT.ENV_CONFIG (CONFIG_KEY, CONFIG_VALUE) AS
+SELECT 'SCHEMA_REDIRECTS', PARSE_JSON('[]');
+CALL SBX_DEV_LAB5B.CALC_SUPPORT.SP_COMPUTE_MINI_RESULT(2001, NULL);
+</code></pre>
+<p>Symptom: the call fails with an insufficient-privileges error on the INT result table. Diagnosis: with no redirect the procedure tried to insert into <code>SBX_INT_FIN.FIN_CALCULATION...</code>, and the developer role has only <code>SELECT</code> there. That grant is the last line of defence. Run the INT baseline check from Step 5.12: still unchanged. Recovery: a DCM plan against the clone shows the drift on <code>ENV_CONFIG</code>; deploy to restore it and confirm an empty re-plan. Lesson: in NAIC the guard <code>SP_GET_ENV_REDIRECTS</code> checks only <code>HOME_SCHEMA</code>, not the map, which is why the clone target derives the map from <code>calc_db</code> and why grants matter. Then drop <code>LAB5B</code> with the drop procedure.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-07-08]:</strong> the exact error text and whether <code>SP_COMPUTE_MINI_RESULT</code> fails at the dynamic insert (expected) or earlier. Record it in file 13.</p>
+</blockquote>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Schema clone fails with hybrid tables unless <code>IGNORE HYBRID TABLES</code></td>
+<td>Steps 5.1, 5.2</td>
+<td>The clause plus empty recreation</td>
+<td>VERIFIED (docs); error number TO-CONFIRM TC-07-01</td>
+</tr>
+<tr>
+<td>Hybrid tables cannot be single-table cloned or undropped</td>
+<td>Step 5.5</td>
+<td>Database-level clone, or recreate</td>
+<td>VERIFIED (docs)</td>
+</tr>
+<tr>
+<td>Clone history says hybrid migrations ran</td>
+<td>Step 5.3</td>
+<td>Recreate from <code>GET_DDL</code>, or fresh history</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>Clones keep the source owners, so mixed ownership breaks the hand-off</td>
+<td>Section 3 owner check</td>
+<td>One owner role for all source objects</td>
+<td>observed in NAIC</td>
+</tr>
+<tr>
+<td>Retention 0 means a dropped clone is gone</td>
+<td>Step 5.5</td>
+<td>Intentional; refresh scripts warn</td>
+<td>TO-CONFIRM TC-07-03</td>
+</tr>
+<tr>
+<td><code>GET_DDL</code> needs a constant object name</td>
+<td>Step 5.7</td>
+<td>One call per table</td>
+<td>observed in NAIC (error 1046)</td>
+</tr>
+<tr>
+<td>A row count cannot prove "no writes"</td>
+<td>Step 5.12</td>
+<td>Grants, query history</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>Physical copy of hybrid data in a database clone costs compute</td>
+<td>Step 5.4</td>
+<td>Skip hybrid tables</td>
+<td>VERIFIED (docs); behaviour TO-CONFIRM TC-G15</td>
+</tr>
+<tr>
+<td>Scripting syntax in the procedures was not checked against public pages</td>
+<td>Step 5.7</td>
+<td>Read <code>sqlerrm</code>, fallbacks in the callout</td>
+<td>TO-CONFIRM TC-07-05</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>A zero-copy clone gives an isolated copy for almost no cost, and retention 0 removes the safety net.</li>
+<li>Hybrid tables need <code>IGNORE HYBRID TABLES</code> in a schema clone and are recreated empty from <code>GET_DDL</code>.</li>
+<li>A cloned Flyway history can claim work that the clone does not contain.</li>
+<li>A guarded <code>EXECUTE AS OWNER</code> procedure that accepts only a validated ticket is how a developer role gets a capability it does not hold.</li>
+<li>Redirects plus DCM's CLONE target make a clone write to itself, and grants are the last defence.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('LAB5A');
+CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('LAB5B');
+DROP DATABASE IF EXISTS SBX_DEV_LAB5M;
+DROP DATABASE IF EXISTS SBX_DEV_LAB5FULL;
+SHOW DATABASES LIKE 'SBX_DEV_%';
+</code></pre>
+<p>Run in: <strong>Terminal</strong>: <code>unset FLYWAY_URL FLYWAY_PLACEHOLDERS_CALC_DB</code> (so the next lab does not point Flyway at a dropped clone), then reload <code>.env.flyway</code> when needed. Delete <code>dcm/calc_engine/out</code>.</p>
+<p>Keep: both procedures and their grants, the three scripts, and the INT row counts. Cost note: clone storage is near zero until data diverges, and the warehouse runs only while statements run. Leftover clones are the usual cost leak; Lab 6 adds a scheduled sweeper for pull-request clones.</p>
+<p>Learner action (git): commit <code>sql/clone_support/</code>, <code>scripts/refresh_dev_clone.sh</code>, <code>scripts/assert_zero_int_writes.sql</code> and <code>scripts/smoke_clone.sql</code> on a branch of your choice.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<ul>
+<li>Procedures <code>SBX_INT.CALC_DEV_SUPPORT.CREATE_CALC_DEV_CLONE</code> and <code>DROP_CALC_DEV_CLONE</code> exist and <code>SBX_CALC_DEV</code> holds <code>USAGE</code> on both.</li>
+<li><code>scripts/refresh_dev_clone.sh</code>, <code>scripts/assert_zero_int_writes.sql</code>, <code>scripts/smoke_clone.sql</code> exist. <code>scripts/plan_summary.py</code> from Lab 3 is used by them.</li>
+<li>Clone <code>SBX_DEV_LAB5A</code> (and the manual and Break it clones) are dropped.</li>
+<li>Your INT baseline row counts are written down: <code>SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE</code> and <code>SBX_INT.CALC_SUPPORT.EXECUTIONS</code>.</li>
+</ul>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G04, TC-G15, TC-G29, TC-07-01 (error text of a schema clone with hybrid tables), TC-07-02 (<code>SHOW DCM PROJECTS</code> form and whether a clone copies the project), TC-07-03 (UNDROP error with retention 0), TC-07-04 (developer <code>CREATE DATABASE</code> error), TC-07-05 (Scripting syntax: <code>FOR</code> over <code>RESULTSET</code>, argument-signature regex), TC-07-06 (first clone plan composition), TC-07-07 (<code>snow sql -D</code> templating), TC-07-08 (redirect-forgotten error). New names introduced here for the contract: none beyond the contract's scripts (<code>assert_zero_int_writes.sql</code> is written in this lab; <code>smoke_clone.sql</code> too).</p>
+<h2 id="13-next">13. Next</h2>
+<p>Continue with <a href="08-lab6-cicd-github-actions.md">08-lab6-cicd-github-actions.md</a>.</p>
+</body></html>

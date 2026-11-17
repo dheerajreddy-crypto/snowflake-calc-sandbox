@@ -1,0 +1,342 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>01. The real calc engine and Calc Admin, and where each concept applies</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="01-the-real-calc-engine-and-calc-admin-and-where-each-concept-applies">01. The real calc engine and Calc Admin, and where each concept applies</h1>
+<blockquote>
+<p>Read time: 40 minutes. No hands-on steps. Purpose: every concept in the labs maps to a real thing in NAIC. Facts below come from the NAIC architecture pages, the DCM proof of concept branch (<code>origin/feature/dcm-poc</code>, tip <code>b77dc71</code>, read-only), the earlier explainer reports and the Calc Admin documents. Where a shape was rebuilt from documentation rather than seen as source, it says so.</p>
+</blockquote>
+<p>Sources used (all read-only):</p>
+<ul>
+<li><code>calc-engine/docs/calc-engine-complete-architecture.html</code> (called ARCH here), <code>calc-engine-pipeline.html</code> (PIPE), <code>calc-admin-with-flyway.html</code> (ADMINFW).</li>
+<li>DCM branch files: <code>dcm/calc_engine/manifest.yml</code>, <code>dcm/calc_engine/sources/definitions/</code>, <code>scripts/refresh_dev_clone.sh</code>, <code>sql/clone_support/calc_dev_clone_procs.sql</code>, <code>data_changes/</code>, <code>plans/dcm_strategy_working_notes.md</code> (NOTES).</li>
+<li><code>Analysis/2026-11-12_dcm-and-flyway-explainer/report.md</code>, <code>Analysis/2026-11-11_gitlab-ci-for-snowflake-explainer/report.md</code>.</li>
+<li>Calc Admin: <code>calculations-workflow-audit-tables.md</code>, <code>02-dheeraj-hybrid-tables-changes.md</code>, ADR-0026.</li>
+</ul>
+<h2 id="what-the-calc-engine-is">What the calc engine is</h2>
+<p>The calc engine computes NAIC financial ratios and totals inside Snowflake. Its key design choice: <strong>calculations are stored as data, and stored procedures turn that data into SQL and run it.</strong></p>
+<ul>
+<li><strong>Calculations as rows.</strong> Tables in the schema <code>COMMON_INT.CALCULATION_SUPPORT</code> hold the definition of each calculation: <code>CALCULATIONS</code> (one row per calc, with a status of <code>DRAFT</code>, <code>ACTIVE</code> or <code>INACTIVE</code>), <code>FORMULAS</code>, <code>MAPPINGS</code>, <code>MAPPING_DETAILS</code>, <code>MAPPING_JOINS</code>, <code>FORMULA_VARIABLES</code>, <code>FORMULA_CATEGORIES</code>, <code>CALC_OUTPUT_COLUMNS</code>, <code>CALC_MERGE_KEYS</code>, and others. Run history is in <code>EXECUTIONS</code>; promotion history in <code>PROMOTION_LOG</code>.</li>
+<li><strong>Stored procedures that generate SQL.</strong> About 34 procedures in INT as of 2026-11-11, for example <code>SP_REGISTER_CALCULATIONS</code>, <code>SP_UPDATE_DRAFT_CALCULATION</code>, <code>SP_ACTIVATE_DRAFT_CALCULATION</code> (promotes a draft and retires the calc it replaces), <code>SP_EXTRACT_CALCULATION_JSON</code>, <code>SP_BUILD_SQL_TEMPLATE</code>. <code>SP_RUN_CALCULATION</code> builds and runs the SQL for one calc. Many procedures use <code>EXECUTE AS OWNER</code>, meaning they run with the rights of the role that owns them, not the caller.</li>
+<li><strong>Other objects.</strong> 5 functions, 1 view (<code>ENV_CONFIG</code>), 9 sequences (<code>SEQ_CALC_ID</code>, <code>SEQ_EXECUTION_ID</code>, and so on), 24 tables in total in INT (NOTES section 30, inventory of 2026-11-11).</li>
+<li><strong>Results.</strong> Calculation output goes to <code>NAIC_&lt;tier&gt;_FINANCIAL_EDL.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE</code> (tier such as <code>INT</code>). That schema belongs to another team (EDP), which already runs its own Flyway for it.</li>
+<li><strong>Calculation states and approvals.</strong> The engine knows <code>DRAFT</code>, <code>ACTIVE</code>, <code>INACTIVE</code>. Calc Admin (the web app and service on top) adds its own review statuses, covered below.</li>
+<li><strong>Redirects.</strong> Procedures contain INT names (for example <code>COMMON_INT.CALCULATION_SUPPORT.</code>). A function <code>FN_APPLY_REDIRECTS</code> rewrites those names at run time, using a map from the view <code>ENV_CONFIG</code>. In a clone the map points INT names to the clone, so a calc run in a clone writes to the clone. This is the reason clone-safe deployment needs templating (Lab 5).</li>
+<li><strong>Streamlit.</strong> A Streamlit app <code>CALCULATION_ENGINE</code> runs inside INT from a Snowflake Git repository object. It is out of scope for the sandbox. DCM lists Streamlit as a preview entity type.</li>
+</ul>
+<blockquote>
+<p><strong>The standing rule:</strong> on NAIC, nobody except the calc owner runs calculations. That is why the sandbox has its own harmless <code>SP_COMPUTE_MINI_RESULT</code>.</p>
+</blockquote>
+<h2 id="old-way-and-drift">Old way and drift</h2>
+<p><strong>The old way.</strong> A developer edits a very large file, <code>sql/procedures.sql</code> (about 6,700 lines, 31 <code>CREATE OR REPLACE PROCEDURE</code> statements), then pastes it into a Snowsight worksheet and runs it against INT. There is no CI pipeline file yet. <code>CREATE OR REPLACE</code> is safe to repeat, but it silently overwrites whatever is live, including a newer version someone else pasted.</p>
+<p><strong>Drift</strong> means the live Snowflake objects no longer match the files in Git. Evidence found in NAIC (earlier explainer, labelled by finding):</p>
+<ul>
+<li>Live objects with no DDL on <code>main</code>: <code>SP_PROMOTE_METADATA</code>, <code>SP_TOP_STATES</code>, and tables such as <code>FIN_CALCULATION_RESULT_DRAFT</code>, <code>DYNAMIC_FUNCTION_CONFIGS</code>, <code>PROMOTION_LOG</code>.</li>
+<li><code>main</code> was behind INT: it lacked the redirect code (<code>FN_APPLY_REDIRECTS</code>, <code>SP_GET_ENV_REDIRECTS</code>, <code>ENV_CONFIG</code>). NOTES section 30 warns that deploying from <code>main</code> would revert that work.</li>
+<li>Two Calc Admin hybrid tables, <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code>, were created by hand in INT on 2026-11-03 and have no DDL in Git. They do not exist in QA or PROD.</li>
+<li>Mixed ownership: some objects owned by <code>ACCOUNTADMIN</code>, some by <code>SYSADMIN</code>, most by <code>CICD_PIPELINE</code>. Clones broke until everything was owned by one role.</li>
+<li>No audit trail of who deployed what. NOTES section 19: the deploy audit comes from GitLab, not Snowflake.</li>
+<li>A hot fix in Snowsight would be reverted by the next deployment from files.</li>
+</ul>
+<p>Lab 1 lets you create each of these pains yourself in miniature.</p>
+<h2 id="target-architecture-lanes">Target architecture lanes</h2>
+<p>The architecture pages split responsibilities into lanes. The rule, in the pages' words, is that every object, migration, identity and artifact has one named owner and that no object has overlapping DCM and Flyway ownership.</p>
+<table>
+<thead>
+<tr>
+<th>Lane</th>
+<th>Owns</th>
+<th>Does not own</th>
+<th>Tool</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platform</td>
+<td>Accounts, databases, schemas (containers), warehouses, service users, roles, integrations</td>
+<td>Procedure bodies, migration data</td>
+<td>Terraform</td>
+</tr>
+<tr>
+<td>DCM Calc Engine project</td>
+<td>Standard tables, SQL and Python routines, views, sequences, approved grants, ordinary tasks</td>
+<td>Hybrid tables, Flyway history, row migrations, runtime-generated functions</td>
+<td><code>snow dcm</code></td>
+</tr>
+<tr>
+<td>Flyway</td>
+<td>Calc Admin lifecycle schema, hybrid tables and indexes, <code>FIN_CALCULATION</code> migrations, explicit renames and type changes, data changes, clone support</td>
+<td>Procedure bodies owned by DCM</td>
+<td>Flyway</td>
+</tr>
+<tr>
+<td>Artifact pipeline</td>
+<td>Python package and Streamlit files, SBOM, scan evidence</td>
+<td>Database schema</td>
+<td>CI jobs</td>
+</tr>
+<tr>
+<td>Runtime policy</td>
+<td>Approved objects created at run time in a separate schema</td>
+<td>Anything under DCM or Flyway</td>
+<td>Policy</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Status of DCM, stated plainly.</strong> Both DCM and Flyway are being implemented. The three target pages (ARCH, PIPE, ADMINFW) describe both tools. A working note dated 2026-11-11 (NOTES section 30) recorded that the DCM strategy was paused after a meeting, and the INT DCM project object <code>COMMON_INT.CALCULATION_SUPPORT.CALC_ENGINE_DCM</code> was dropped. The team has since confirmed that DCM is part of the design, so the INT project is to be re-adopted. The roadmap in ARCH names the phases: 1 restore Git and INT parity, 2 DCM core re-adoption in INT (exit evidence: an adoption-only plan, unchanged data and grants, an empty re-plan), 3 Flyway boundaries and clone bootstrap, 4 a minimal merged-result pipeline plus a manual INT deploy.</p>
+<p>A useful fact from that episode: dropping the DCM project object left every object, row and grant in place (34 procedures, 5 functions, 24 tables, 1 view, 9 sequences; <code>CALCULATIONS</code> had 1,324 rows before and after). You will demonstrate the same behaviour in Lab 3.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> dropping only the DCM project object leaves managed objects in place as unmanaged, but deletes the deployment history (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage, read 2026-11-16).</p>
+</blockquote>
+<p><strong>What the DCM proof of concept proved</strong> (branch <code>feature/dcm-poc</code>, NOTES sections 18 to 25):</p>
+<ul>
+<li>Adopting 70 existing objects into a DCM project changed no data. First clone deploy: 70 entities, 0 create, 70 alter, 0 drop; 69 were adoption only and 1 was a real change.</li>
+<li>After a deploy, the next plan reported no changes. Editing one procedure planned as exactly one change.</li>
+<li>Hybrid tables cannot be defined in DCM: <code>DEFINE HYBRID TABLE</code> fails with <code>unexpected 'HYBRID'</code> (so the Flyway lane owns them).</li>
+<li>Grants survive edits. A clone refresh takes about 5 minutes. A calc group run in a clone wrote 267,427 result rows to the clone and 0 to INT (done by the team, not repeated in this pack).</li>
+</ul>
+<p><strong>The Flyway contract in the target design</strong> (ARCH and ADMINFW): Flyway runs in pipeline jobs, never at application startup. One history table per migration boundary and environment. <code>validateOnMigrate=true</code>, <code>outOfOrder=false</code>, <code>baselineOnMigrate=false</code> in normal use, <code>cleanDisabled=true</code>, no automatic repair. Applied versions are immutable (fix forward). DDL migrations are small because Snowflake commits DDL independently. Data migrations use explicit transactions and row-count assertions.</p>
+<p><strong>There is no universal rollback.</strong> Snowflake DDL commits independently, and neither the DCM definitions nor Flyway history restore data.</p>
+<h2 id="who-owns-what">Who owns what</h2>
+<table>
+<thead>
+<tr>
+<th>Change type</th>
+<th>Owner</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New database or schema</td>
+<td>Platform (Terraform)</td>
+<td>Container and access decisions</td>
+</tr>
+<tr>
+<td>New or edited standard table, view, sequence, function</td>
+<td>DCM</td>
+<td>Desired-state diff and plan are a fit</td>
+</tr>
+<tr>
+<td>Procedure body edit</td>
+<td>DCM</td>
+<td>Whole-object replace shown in the plan</td>
+</tr>
+<tr>
+<td>Hybrid table, secondary index</td>
+<td>Flyway</td>
+<td>DCM does not support hybrid tables</td>
+</tr>
+<tr>
+<td>Table rename, type change</td>
+<td>Flyway (explicit), then DCM definition updated</td>
+<td>DCM would see rename as drop plus create</td>
+</tr>
+<tr>
+<td>Row data fix</td>
+<td>Flyway (ledger and row-count assertion)</td>
+<td>Neither DCM nor DDL handles rows</td>
+</tr>
+<tr>
+<td>Grants on engine objects</td>
+<td>DCM (<code>GRANT</code> statements)</td>
+<td>Declared and reapplied</td>
+</tr>
+<tr>
+<td>Grants on Flyway objects</td>
+<td>Flyway migration</td>
+<td>Same lane as the table</td>
+</tr>
+<tr>
+<td>Clone support procedures</td>
+<td><code>snow sql</code> deployment (clone support), outside DCM and Flyway in the sandbox</td>
+<td>Owner-rights procedures that create databases</td>
+</tr>
+</tbody>
+</table>
+<p>The ordering rule for normal changes: DCM plan and deploy first, then Flyway migrate, then a DCM re-plan that must be empty. For a rename: Flyway first, then the DCM definition.</p>
+<h3 id="calc-admin-and-its-lifecycle-tables">Calc Admin and its lifecycle tables</h3>
+<p>Calc Admin is the web UI and service where people draft, review and activate calculations. Its facts:</p>
+<ul>
+<li><strong>Live today (INT).</strong> Two hybrid tables in the engine schema, created by hand on 2026-11-03, empty at creation, owner <code>CICD_PIPELINE</code>. <code>CALC_WORKFLOW_STATUS</code> has one row per calc with an enforced primary key <code>CALC_ID</code> and a status of <code>DRAFT</code>, <code>IN_REVIEW</code>, <code>APPROVED</code>, <code>ACTIVE</code> or <code>DISCARDED</code>. <code>CALC_AUDIT_EVENT</code> is append-only, with an enforced primary key <code>EVENT_ID</code> that defaults from a sequence <code>CALC_AUDIT_EVENT_SEQ</code>. The service role <code>FN_NAIC_CALC_ENGINE_NP</code> holds <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> on the status table and only <code>INSERT</code> on the audit table. The column list in the pack is reconstructed from documentation, not from the original DDL, which was not found in any repository.</li>
+<li><strong>A grant bug that happened.</strong> The service role could not see the sequence until <code>USAGE</code> was granted. An insert that omits <code>EVENT_ID</code> fails without it. Lab 7 reproduces this.</li>
+<li><strong>Action-first audit.</strong> Today the service calls the engine first and writes one audit row afterwards. If the audit write fails, an action happened without a record.</li>
+<li><strong>Target design (ADR-0026, status Proposed 2026-10-01).</strong> The unit of review becomes the calc set, not a single calc. Five tables and two sequences: <code>CALC_REVISION</code>, <code>CALC_REVISION_MEMBER</code>, <code>CALC_VERSION</code>, <code>CALC_AUDIT_EVENT</code> (standard) and <code>CALC_OPEN_REVISION</code> (the only hybrid, enforcing one open revision per calc set and year and holding a row lock). Audit becomes <strong>event-first</strong>: write a <code>PENDING</code> event, call the engine, then complete the event once with the outcome. ADR-0026 rejects making every table hybrid because hybrid tables give up Fail-safe, UNDROP, replication and full Time Travel, which matter most for history.</li>
+<li><strong>Open tension.</strong> Event-first needs one <code>UPDATE</code> on the audit event (<code>PENDING</code> to outcome), while the live grants allow insert and select only. Snowflake cannot narrow <code>UPDATE</code> to a column or to a pending row. Lab 7 shows both models without choosing a side. The choice between the two-hybrid-table branch design and the single-hybrid ADR design is an open stakeholder decision.</li>
+<li><strong>Why Flyway for it.</strong> The old Postgres datasource was removed (US-67511), so there is no migration tool for the Snowflake lifecycle tables. DCM does not support hybrid tables. Flyway fits: versioned scripts, history table, checksum.</li>
+<li><strong>Baseline story.</strong> INT already has the hand-made tables, so INT is baselined after verifying the live shape equals the scripts, and QA and PROD run the scripts for real (baseline needs an ADR or runbook approval because <code>baselineOnMigrate</code> stays false).</li>
+<li><strong>Why not run Flyway at app startup.</strong> The target says application pods start after the migration job and a compatibility gate succeed; runtime only validates the schema version and never alters it. The Postgres-based <code>fpr-admin-service</code> does the opposite (Spring Boot runs Flyway at start with the app's own datasource, <code>out-of-order=true</code>, and <code>repair-on-migrate=true</code> in dev). Lab 7 contrasts the two.</li>
+</ul>
+<h3 id="the-existing-flyway-at-naic-edp">The existing Flyway at NAIC (EDP)</h3>
+<p>EDP already runs Flyway for <code>NAIC_&lt;tier&gt;_FINANCIAL_EDL.FIN_CALCULATION</code>, with a history table <code>flyway_bus_history_table</code> and a GitLab template. Concerns recorded by the earlier explainer: the Flyway image is tagged <code>latest</code> and the template follows <code>master</code> (both unpinned). Lab 6 covers pinning.</p>
+<h3 id="cicd-as-planned">CI/CD, as planned</h3>
+<p>The GitLab pipeline for the calc engine does not exist yet. The target (PIPE): static checks, a review clone per merge request, Flyway info and validate, a full DCM plan with an exact DROP policy, deploy, empty re-plan, smoke tests, cleanup that always runs, then a protected manual INT deploy, later QA and PROD with change approval. Identity target: GitLab OIDC to Snowflake workload identity federation, separate identities for review, INT, QA, PROD. Supply chain target: mirrored, version-pinned images, no <code>latest</code>, no downloads at job run time. Lab 6 rebuilds this on GitHub Actions.</p>
+<h2 id="real-to-miniature-table">Real to miniature table</h2>
+<p>The sandbox is a small copy of the same shapes. Names are fixed so later labs and your assistant find them.</p>
+<table>
+<thead>
+<tr>
+<th>Real thing in NAIC</th>
+<th>Miniature in the sandbox</th>
+<th>Lab where you meet it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Database <code>COMMON_INT</code></td>
+<td><code>SBX_INT</code></td>
+<td>02 (created), 03</td>
+</tr>
+<tr>
+<td>Schema <code>CALCULATION_SUPPORT</code></td>
+<td><code>CALC_SUPPORT</code> (in <code>SBX_INT</code>, <code>SBX_QA</code>, <code>SBX_PROD</code>)</td>
+<td>03</td>
+</tr>
+<tr>
+<td><code>NAIC_INT_FINANCIAL_EDL</code> (results, EDP)</td>
+<td><code>SBX_INT_FIN</code> with <code>FIN_CALCULATION</code></td>
+<td>02, 07</td>
+</tr>
+<tr>
+<td>DCM project <code>CALC_ENGINE_DCM</code></td>
+<td><code>CALC_ENGINE_DCM</code> (one per database)</td>
+<td>05, 06, 07</td>
+</tr>
+<tr>
+<td>Role <code>CICD_PIPELINE</code></td>
+<td><code>SBX_CICD_PIPELINE</code></td>
+<td>02, 03</td>
+</tr>
+<tr>
+<td>Role <code>COMMON_INT_CALC_DEV</code></td>
+<td><code>SBX_CALC_DEV</code></td>
+<td>02, 07</td>
+</tr>
+<tr>
+<td>Role <code>FN_NAIC_CALC_ENGINE_NP</code></td>
+<td><code>SBX_FN_CALC_ENGINE_NP</code></td>
+<td>02, 09</td>
+</tr>
+<tr>
+<td>Clone database <code>CALC_DEV_&lt;ticket&gt;</code></td>
+<td><code>SBX_DEV_&lt;TICKET&gt;</code></td>
+<td>07, 08</td>
+</tr>
+<tr>
+<td>Procedures <code>CREATE_CALC_DEV_CLONE</code>, <code>DROP_CALC_DEV_CLONE</code></td>
+<td>same names in <code>SBX_INT.CALC_DEV_SUPPORT</code></td>
+<td>07</td>
+</tr>
+<tr>
+<td>View <code>ENV_CONFIG</code>, function <code>FN_APPLY_REDIRECTS</code></td>
+<td>same names</td>
+<td>05, 07</td>
+</tr>
+<tr>
+<td>Hybrid tables <code>CALC_WORKFLOW_STATUS</code>, <code>CALC_AUDIT_EVENT</code></td>
+<td>same names (hybrid in Mode H, standard stand-ins in Mode S)</td>
+<td>06, 09</td>
+</tr>
+<tr>
+<td>Ledger table <code>DATA_CHANGE_LOG</code> and <code>data_changes/V...</code> scripts</td>
+<td><code>DATA_CHANGE_LOG</code> and Flyway migration <code>V3</code></td>
+<td>06</td>
+</tr>
+<tr>
+<td><code>SP_RUN_CALCULATION</code> (never called on NAIC)</td>
+<td><code>SP_COMPUTE_MINI_RESULT</code></td>
+<td>07</td>
+</tr>
+<tr>
+<td><code>SP_REGISTER_CALCULATIONS</code></td>
+<td><code>SP_REGISTER_CALCULATION</code></td>
+<td>03, 05</td>
+</tr>
+<tr>
+<td><code>SP_ACTIVATE_DRAFT_CALCULATION</code></td>
+<td><code>SP_ACTIVATE_DRAFT_CALCULATION</code> (mini)</td>
+<td>05, 09</td>
+</tr>
+<tr>
+<td><code>SP_ADD_CATEGORY</code></td>
+<td><code>SP_ADD_CATEGORY</code></td>
+<td>03, 05</td>
+</tr>
+<tr>
+<td>Tables <code>CALCULATIONS</code>, <code>FORMULAS</code>, <code>FORMULA_CATEGORIES</code>, <code>EXECUTIONS</code></td>
+<td>same names, few columns</td>
+<td>03 onward</td>
+</tr>
+<tr>
+<td>Sequences <code>SEQ_CALC_ID</code> and others</td>
+<td><code>SEQ_CALC_ID</code>, <code>SEQ_FORMULA_ID</code>, <code>SEQ_EXECUTION_ID</code>, <code>SEQ_WORKFLOW_ID</code>, <code>SEQ_AUDIT_EVENT_ID</code></td>
+<td>03, 05, 06</td>
+</tr>
+<tr>
+<td><code>scripts/refresh_dev_clone.sh</code></td>
+<td><code>scripts/refresh_dev_clone.sh</code></td>
+<td>07</td>
+</tr>
+<tr>
+<td>Planned GitLab pipeline</td>
+<td>Six GitHub workflows</td>
+<td>08</td>
+</tr>
+<tr>
+<td>Terraform lane</td>
+<td><code>snowflake-sandbox-bootstrap.sql</code></td>
+<td>02</td>
+</tr>
+<tr>
+<td>EDP Flyway for <code>FIN_CALCULATION</code></td>
+<td><code>FIN_CALCULATION_RESULT_BASE</code> created by the bootstrap</td>
+<td>02, 07</td>
+</tr>
+<tr>
+<td>Streamlit <code>CALCULATION_ENGINE</code></td>
+<td>Out of scope (mentioned only)</td>
+<td>none</td>
+</tr>
+<tr>
+<td>Manifest targets <code>INT</code> and <code>CLONE</code> with <code>calc_db</code> templating</td>
+<td><code>dcm/calc_engine/manifest.yml</code> with <code>INT</code>, <code>QA</code>, <code>PROD</code>, <code>CLONE</code></td>
+<td>05, 07</td>
+</tr>
+<tr>
+<td>Safety placeholder <code>CALC_DEV_SET_ON_CLI</code></td>
+<td><code>SBX_DEV_SET_ON_CLI</code> (must never exist)</td>
+<td>07, 10</td>
+</tr>
+</tbody>
+</table>
+<h2 id="reading-list-the-real-sources">Reading list (the real sources)</h2>
+<p>In this order, if you want to read the originals later:</p>
+<ol>
+<li><code>calc-engine/docs/calc-engine-complete-architecture.html</code>: sections on lanes, deployment ownership, clones, rename protocol, failure drills.</li>
+<li><code>calc-engine/docs/calc-engine-pipeline.html</code>: the job flow and pipeline types.</li>
+<li><code>calc-engine/docs/calc-admin-with-flyway.html</code>: the lifecycle schema, event-first bracket, Flyway rules.</li>
+<li><code>Analysis/2026-11-12_dcm-and-flyway-explainer/report.md</code>: plain-language explainer with evidence labels.</li>
+<li>Branch <code>origin/feature/dcm-poc</code>: <code>dcm/calc_engine/manifest.yml</code>, <code>sql/clone_support/calc_dev_clone_procs.sql</code>, <code>scripts/refresh_dev_clone.sh</code>, <code>plans/dcm_strategy_working_notes.md</code>.</li>
+<li><code>Calc-admin/calculations-workflow-audit-tables.md</code> and <code>calc-admin-gov</code> ADR-0026.</li>
+<li><code>Fpr-admin/fpr-admin-service/src/main/resources/db/migration/</code> and <code>application.properties</code> for the Postgres Flyway precedent.</li>
+</ol>
+<h2 id="open-items-for-file-13">Open items for file 13</h2>
+<p>TC ids used in this file: none. All claims are from NAIC sources read by the authors or from the Snowflake page cited.</p>
+<h2 id="next">Next</h2>
+<p>Go to <a href="02-accounts-and-setup.md">02-accounts-and-setup.md</a>.</p>
+</body></html>

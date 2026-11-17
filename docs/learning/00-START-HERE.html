@@ -1,0 +1,428 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>00. Start here: hands-on DCM + Flyway + CI/CD learning pack</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="00-start-here-hands-on-dcm-flyway-cicd-learning-pack">00. Start here: hands-on DCM + Flyway + CI/CD learning pack</h1>
+<blockquote>
+<p>Read time: 20 minutes. Pack written 2026-11-16. Public documentation facts in this pack were read on 2026-11-16. Anything not read is marked <strong>TO-CONFIRM</strong> and collected in file 13.</p>
+</blockquote>
+<h2 id="purpose">Purpose</h2>
+<p>You (Dheeraj) understand DCM Projects and Flyway only at a high level today. This pack lets you build a small personal sandbox in your own Snowflake trial account and your own GitHub repository, then learn both tools by doing, one lab at a time.</p>
+<p>By the end you should be able to:</p>
+<ul>
+<li>Explain, from first principles, why the NAIC calc engine and Calc Admin need <strong>DCM</strong> (a Snowflake feature that deploys a declared end state of objects) and <strong>Flyway</strong> (a tool that applies numbered, ordered migration scripts).</li>
+<li>Show how the same work looks <strong>without</strong> either tool, and what each tool cannot do.</li>
+<li>Run a change through a pipeline: pull request, clone environment, plan, deploy, test, cleanup, promotion with approval.</li>
+<li>Decide which tool owns which kind of change, and say why.</li>
+</ul>
+<p>Status of the two tools in NAIC, stated once and plainly: <strong>both DCM and Flyway are part of the target design and both are being implemented.</strong> DCM owns the supported engine objects (standard tables, procedures, functions, views, sequences, approved grants, ordinary tasks). Flyway owns hybrid tables, the Calc Admin lifecycle schema, explicit renames, data changes, clone support and the <code>FIN_CALCULATION</code> migrations. A working note dated 2026-11-11 recorded pausing DCM and dropping the INT project object. The team has since confirmed that both tools are in the design (architecture pages <code>calc-engine-complete-architecture.html</code>, <code>calc-engine-pipeline.html</code>, <code>calc-admin-with-flyway.html</code>), so the INT project is to be re-adopted. File 01 explains this in full.</p>
+<h2 id="how-the-pack-is-organised">How the pack is organised</h2>
+<p>Every file is a Markdown file with an HTML copy next to it. Read them in order. Labs are separate files, each doing one concept.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Content</th>
+<th>Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>00</td>
+<td>This file: how to use the pack, the assistant rules, the first prompt</td>
+<td>Read</td>
+</tr>
+<tr>
+<td>01</td>
+<td>The real calc engine and Calc Admin, mapped to the sandbox</td>
+<td>Read</td>
+</tr>
+<tr>
+<td>02</td>
+<td>Accounts, security, cost controls, tools, repository, bootstrap SQL</td>
+<td>Setup</td>
+</tr>
+<tr>
+<td>03</td>
+<td>Lab 1: the old way (no tooling)</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>04</td>
+<td>Lab 2: Flyway fundamentals</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>05</td>
+<td>Lab 3: DCM fundamentals</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>06</td>
+<td>Lab 4: both tools together, one owner per object</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>07</td>
+<td>Lab 5: clones as ticket environments</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>08</td>
+<td>Lab 6: CI/CD with GitHub Actions</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>09</td>
+<td>Lab 7: Calc Admin lifecycle in miniature</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Lab 8: failure drills and limitations</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Capstone: one change four ways, comparison, quiz</td>
+<td>Hands-on</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Glossary, cheat sheets, troubleshooting</td>
+<td>Reference</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Open questions and verification log</td>
+<td>Reference</td>
+</tr>
+<tr>
+<td>index</td>
+<td>Links to everything</td>
+<td>Reference</td>
+</tr>
+</tbody>
+</table>
+<p>Each lab file uses the same 13 headings: Goal, Why this matters, Prerequisites and state check, Concepts, Step-by-step, Checkpoint questions, Break it, Limitations, What you learned, Cleanup, State left behind, Open items, Next.</p>
+<p>Conventions used everywhere:</p>
+<ul>
+<li>Placeholders are written in angle brackets: <code>&lt;ACCOUNT_IDENTIFIER&gt;</code>, <code>&lt;LEARNER_USER&gt;</code>, <code>&lt;GITHUB_OWNER&gt;</code>, <code>&lt;PASSPHRASE&gt;</code>, <code>&lt;PUBLIC_KEY_BODY&gt;</code>. You replace them. Never paste real secrets into any file in the repository.</li>
+<li>Each step says where to run it: <strong>Snowsight worksheet</strong> (the Snowflake web UI), <strong>Terminal</strong>, or <strong>GitHub UI</strong>.</li>
+<li>Each step has a "You should see" block.</li>
+<li>Callouts: <code>VERIFIED</code> means the fact was seen on an official page on 2026-11-16 (URL given). <code>TO-CONFIRM [TC-id]</code> means it was not verified; the callout says how to check, and you record the result in file 13.</li>
+<li>Modes: <code>H</code> = hybrid tables available, <code>S</code> = standard-table stand-ins, <code>D</code> = DCM available, <code>D-off</code> = DCM not available. File 02 tells you how to find your mode. The default for a free trial is <strong>Mode S + D</strong>.</li>
+</ul>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>A laptop with a terminal (macOS, Linux or Windows with WSL) and permission to install software.</li>
+<li>An email address for the Snowflake trial: use <code>dheeraj.banda3@gmail.com</code> (your personal address). No payment card is needed to start a trial.</li>
+<li>A GitHub account (personal). The sandbox repository must be <strong>public</strong> so that environment approvals work on a free plan (see file 02). It contains no secrets.</li>
+<li>Basic SQL. You do not need to know Snowflake scripting, YAML, Docker or GitHub Actions in advance. Each is introduced where it is first used.</li>
+<li>Roughly 20 to 30 hours in total, spread over several sessions (see "Time per lab").</li>
+</ul>
+<h2 id="rules-for-the-assistant">Rules for the assistant</h2>
+<p>These rules are for the AI assistant in the new session. They also tell you what to expect from it.</p>
+<ol>
+<li><strong>Never ask for, accept, store or print passwords, private keys, passphrases, tokens or one-time codes.</strong> If you paste one by mistake, the assistant tells you to rotate it and does not repeat it.</li>
+<li><strong>Never write a secret into any file or commit one.</strong> Placeholders only. The <code>.gitignore</code> in file 02 blocks the usual key and env file names.</li>
+<li><strong>Use only the sandbox Snowflake account.</strong> The connection names <code>sbx_admin</code>, <code>sbx_dev</code>, <code>sbx_owner</code>, <code>sbx_cicd</code> are the only ones allowed. If any other connection exists on the laptop (for example a NAIC one), the assistant does not use it and says so.</li>
+<li><strong>Explain before acting.</strong> For every step the assistant says what it will do, why, and where it runs, then waits for your go-ahead.</li>
+<li><strong>Wait for your confirmation before every destructive step</strong> (drops, <code>clean</code>, deleting a definition and deploying, <code>DROP DATABASE</code>, rotating keys). Say the exact object names first.</li>
+<li><strong>You run git.</strong> The assistant never runs <code>git commit</code>, <code>git push</code>, <code>git pull</code> or <code>git fetch</code> unless you ask for that specific operation in that request. It may run read-only git commands (<code>status</code>, <code>diff</code>, <code>log</code>).</li>
+<li><strong>Snowflake statements:</strong> the assistant may propose SQL and may run it only through the <code>sbx_*</code> connections, only after you agree. <code>ACCOUNTADMIN</code> is used only for the bootstrap and the resource monitor, never as a default.</li>
+<li><strong>Mark unverified facts.</strong> If a command or behaviour is not confirmed, the assistant says "TO-CONFIRM", runs the check with you and writes the result into file 13.</li>
+<li><strong>Check for cost.</strong> Before starting a long warehouse task, the assistant reminds you of the resource monitor and suspends the warehouse at the end of a session.</li>
+<li><strong>Keep the repository clean.</strong> Files go only into the folders named in the repository tree in file 02. The assistant tells you which files it created so you can commit them.</li>
+</ol>
+<h2 id="first-prompt-to-paste-in-the-new-session">First prompt to paste in the new session</h2>
+<p>Open the workspace that contains your <code>snowflake-calc-sandbox</code> repository, then paste this as your first message. Replace the bracketed parts.</p>
+<pre><code class="language-text">I am Dheeraj. I am following the hands-on DCM + Flyway learning pack in
+docs/learning/ of this repository (snowflake-calc-sandbox). Start by reading
+docs/learning/00-START-HERE.md, then 01, then 02, then the file that matches
+the first &quot;todo&quot; or &quot;doing&quot; row in the Resume here table in 00.
+
+Follow the &quot;Rules for the assistant&quot; section in 00 exactly. In particular:
+- never ask me for or store passwords, private keys, passphrases or tokens;
+- use only the sandbox connections sbx_admin, sbx_dev, sbx_owner, sbx_cicd;
+- explain each step before you do it and wait for my yes before any destructive step;
+- I run git myself; do not commit, push, pull or fetch;
+- mark anything unverified as TO-CONFIRM and add it to file 13.
+
+My current state: [for example &quot;Snowflake trial not created yet&quot; or
+&quot;finished file 02, HYBRID_MODE=S, DCM_MODE=on, snow version X, Flyway 13.12.2&quot;].
+Tell me which file we do next, what I need to have ready, and how long it takes.
+Then guide me one step at a time. After each lab, help me update the Resume here
+table and the verification log in file 13.
+</code></pre>
+<p>How to resume in a later session: paste the same prompt, say which row of the Resume here table you stopped at, and add what is true now (for example "Lab 3 step 5.7 done, project exists"). The assistant re-runs the "Prerequisites and state check" section of the lab to confirm the sandbox matches.</p>
+<h2 id="who-runs-what">Who runs what</h2>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Who</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Create the Snowflake trial and GitHub repository, complete MFA</td>
+<td>You</td>
+</tr>
+<tr>
+<td>Generate the key pair, paste the public key into Snowsight, add the secrets to GitHub</td>
+<td>You (the assistant guides but never sees the private key or passphrase)</td>
+</tr>
+<tr>
+<td>Run SQL in Snowsight or through <code>snow sql</code></td>
+<td>You, or the assistant after you say yes, only on sandbox connections</td>
+</tr>
+<tr>
+<td>Create and edit repository files</td>
+<td>The assistant, after explaining; you review</td>
+</tr>
+<tr>
+<td><code>git add</code>, <code>commit</code>, <code>push</code>, <code>pull</code>, <code>fetch</code>, pull requests, merges, approvals</td>
+<td>You</td>
+</tr>
+<tr>
+<td>Destructive steps</td>
+<td>You confirm; then either of you runs them</td>
+</tr>
+</tbody>
+</table>
+<h2 id="time-per-lab">Time per lab</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What</th>
+<th>Time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>00</td>
+<td>Start here</td>
+<td>20 min read</td>
+</tr>
+<tr>
+<td>01</td>
+<td>Context</td>
+<td>40 min read</td>
+</tr>
+<tr>
+<td>02</td>
+<td>Accounts and setup</td>
+<td>2 to 3 h</td>
+</tr>
+<tr>
+<td>03</td>
+<td>Lab 1, the old way</td>
+<td>1 to 1.5 h</td>
+</tr>
+<tr>
+<td>04</td>
+<td>Lab 2, Flyway fundamentals</td>
+<td>2.5 to 3 h</td>
+</tr>
+<tr>
+<td>05</td>
+<td>Lab 3, DCM fundamentals</td>
+<td>3 h</td>
+</tr>
+<tr>
+<td>06</td>
+<td>Lab 4, both together</td>
+<td>2.5 to 3 h</td>
+</tr>
+<tr>
+<td>07</td>
+<td>Lab 5, clones</td>
+<td>2.5 h</td>
+</tr>
+<tr>
+<td>08</td>
+<td>Lab 6, CI/CD</td>
+<td>3 h (+1 h OIDC stretch)</td>
+</tr>
+<tr>
+<td>09</td>
+<td>Lab 7, Calc Admin lifecycle</td>
+<td>2 to 2.5 h</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Lab 8, failure drills</td>
+<td>2 to 3 h</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Capstone</td>
+<td>3 h</td>
+</tr>
+<tr>
+<td>12, 13</td>
+<td>Reference</td>
+<td>as needed</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Trial clock.</strong> A Snowflake trial lasts 30 days from sign-up or until the free credits are used, whichever comes first. Plan the sessions so labs 03 to 11 fit in that window. See file 02 for details and cost controls.</p>
+<p><strong>VERIFIED:</strong> the trial lasts 30 days or until free credits run out, whichever is first, and then the account is suspended (https://docs.snowflake.com/en/user-guide/admin-trial-account, read 2026-11-16).</p>
+</blockquote>
+<h2 id="progress-checklist">Progress checklist</h2>
+<p>Tick each box (edit this file in your copy) when done.</p>
+<ul>
+<li>[ ] Read 00 and 01</li>
+<li>[ ] 02: trial account created, MFA set, resource monitor active</li>
+<li>[ ] 02: <code>snow</code>, Flyway and git installed and verified</li>
+<li>[ ] 02: key pair generated, public key registered, secrets set in GitHub</li>
+<li>[ ] 02: bootstrap SQL run, repository created with the folder tree</li>
+<li>[ ] 02: probes run, <code>HYBRID_MODE</code> and <code>DCM_MODE</code> recorded</li>
+<li>[ ] Lab 1 (03): old way done, pain points written</li>
+<li>[ ] Lab 2 (04): Flyway fundamentals done</li>
+<li>[ ] Lab 3 (05): DCM fundamentals done, Lab 1 objects adopted</li>
+<li>[ ] Lab 4 (06): ownership split and decision table done</li>
+<li>[ ] Lab 5 (07): clone procedures and isolation proof done</li>
+<li>[ ] Lab 6 (08): workflows green, int approved, QA and PROD promoted</li>
+<li>[ ] Lab 7 (09): lifecycle miniature and role checks done</li>
+<li>[ ] Lab 8 (10): failure drills done</li>
+<li>[ ] Capstone (11): four ways done, quiz answered, teach-back done</li>
+<li>[ ] 13: verification log filled with your results</li>
+</ul>
+<h2 id="resume-here">Resume here</h2>
+<p>Update this table at the end of every session. Keep one row per file.</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Status (todo/doing/done)</th>
+<th>Date</th>
+<th>Mode (H/S, D)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>00 Start here</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>01 Context</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>02 Accounts and setup</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>03 Lab 1 the old way</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>04 Lab 2 Flyway fundamentals</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>05 Lab 3 DCM fundamentals</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>06 Lab 4 both together</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>07 Lab 5 clones</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>08 Lab 6 CI/CD</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>09 Lab 7 Calc Admin lifecycle</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>10 Lab 8 failure drills</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>11 Capstone</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>12 Glossary</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>13 Open questions and log</td>
+<td>todo</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="never-run-calculations-note">Never-run-calculations note</h2>
+<p>This applies to the real <strong>NAIC</strong> environments only. On NAIC you never call <code>POST /executions</code>, <code>SP_RUN_CALCULATION</code>, any other <code>SP_RUN_*</code> procedure, or anything that calls them indirectly (pipelines, <code>SP_RUN_ALL</code>, Streamlit actions). Only the calc owner runs those. This pack never asks you to.</p>
+<p>In your personal sandbox the rule does not apply. The sandbox compute procedure is deliberately named <code>SP_COMPUTE_MINI_RESULT</code> (not <code>SP_RUN_...</code>) so you never confuse it with the real one. It writes one harmless row into a table you own. Use the sandbox account only for this pack.</p>
+<h2 id="next">Next</h2>
+<p>Go to <a href="01-calc-engine-and-calc-admin-context.md">01-calc-engine-and-calc-admin-context.md</a>.</p>
+</body></html>

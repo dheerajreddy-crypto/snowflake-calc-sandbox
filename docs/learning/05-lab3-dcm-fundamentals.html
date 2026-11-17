@@ -1,0 +1,858 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 3: DCM Projects from scratch (file 05)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-3-dcm-projects-from-scratch-file-05">Lab 3: DCM Projects from scratch (file 05)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> 3 | <strong>File no:</strong> 05 | <strong>Time estimate:</strong> 3 h (Parts A to C are required, Parts D to F can be split over a second sitting) | <strong>Prerequisites:</strong> file 03 (Lab 1 objects exist), Snowflake CLI <code>snow</code> 3.24.0 or newer, <code>SBX_CICD_PIPELINE</code> usable through connection <code>sbx_owner</code> | <strong>Modes supported:</strong> H or S, D required (Mode D-off has a read-along path) | <strong>Leaves behind:</strong> project <code>SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM</code> adopting every Lab 1 object plus the remaining engine definitions, deployment alias <code>int-adopt</code>, empty re-plan; scratch schema and scratch project dropped</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>By the end of this lab you can:</p>
+<ol>
+<li>Explain what a DCM project object is and how it differs from a folder of SQL files.</li>
+<li>Write a <code>manifest.yml</code> and definition files that use <code>DEFINE</code>, and run <code>snow dcm create</code>, <code>plan</code> and <code>deploy</code>.</li>
+<li>Read a plan, including the empty plan that means "nothing to do".</li>
+<li>Adopt the hand-made Lab 1 objects into a project without changing them.</li>
+<li>Edit a procedure in place, add a column, and watch drift get detected.</li>
+<li>Delete a definition on purpose and see what that does to data (the main danger of DCM).</li>
+<li>Reuse one set of definition files for several environments with templating.</li>
+<li>Name what DCM cannot manage, each proven by an experiment, and say what covers it instead.</li>
+</ol>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world.</strong> In NAIC, the engine used to be deployed by pasting <code>sql/procedures.sql</code> (about 6,700 lines, 31 <code>CREATE OR REPLACE PROCEDURE</code> statements) into Snowsight, in INT only. Live objects drifted from Git (<code>SP_PROMOTE_METADATA</code>, <code>SP_TOP_STATES</code> and several tables had no DDL on <code>main</code>). The <code>feature/dcm-poc</code> branch split that file into one definition file per object under <code>dcm/calc_engine/sources/definitions/</code>, created the project <code>COMMON_INT.CALCULATION_SUPPORT.CALC_ENGINE_DCM</code>, and adopted 70 live objects with zero data change and an empty re-plan.</p>
+<p>A working note dated 2026-11-11 recorded pausing DCM and dropping the INT project. The team has since confirmed that both DCM and Flyway are part of the target design (architecture pages: complete architecture, pipeline, calc-admin-with-flyway), so the INT project is to be re-adopted. <code>DROP DCM PROJECT</code> left every object, row and grant in place. You will repeat that adoption in miniature in Part B, and you will prove the "left in place" fact in Part D.</p>
+<p>Roadmap phase "2 DCM core re-adoption in INT" has this exit evidence: an adoption-only plan, unchanged data and grants, and an empty re-plan. Those three checks are exactly what this lab practises.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Terminal</strong> (from the repository root <code>snowflake-calc-sandbox</code>).</p>
+<pre><code>snow --version
+snow connection test -c sbx_owner
+snow dcm --help
+git status --short
+</code></pre>
+<p>You should see: a version of 3.24.0 or higher (the pack pins <code>3.33.0</code> for CI; record the version you actually use in the table at the end of Step 3.1), a successful connection test, the list of <code>snow dcm</code> subcommands (<code>create</code>, <code>deploy</code>, <code>describe</code>, <code>drop</code>, <code>drop-deployment</code>, <code>list</code>, <code>list-deployments</code>, <code>plan</code>, <code>preview</code>, <code>purge</code>, <code>test</code>), and a clean working tree.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM Projects need Snowflake CLI 3.24.0 or higher, and the command list above is the one in the CLI reference (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use and https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G16]:</strong> NAIC working notes say DCM needed CLI 3.16 or newer; the public docs say 3.24.0. Use 3.24.0 as the minimum. How to check at lab time: <code>snow dcm --help</code> works on your version. Record the result in file 13.</p>
+</blockquote>
+<p>Run in: <strong>Snowsight worksheet</strong> as role <code>SBX_CICD_PIPELINE</code>. Confirm the Lab 1 objects exist and are owned by the pipeline role (the project owner must own what it adopts).</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+SHOW TABLES IN SCHEMA SBX_INT.CALC_SUPPORT;
+SHOW PROCEDURES IN SCHEMA SBX_INT.CALC_SUPPORT;
+SHOW SEQUENCES IN SCHEMA SBX_INT.CALC_SUPPORT;
+</code></pre>
+<p>You should see: tables <code>CALCULATIONS</code>, <code>FORMULAS</code>, <code>FORMULA_CATEGORIES</code>; procedures <code>SP_REGISTER_CALCULATION</code>, <code>SP_ADD_CATEGORY</code> (plus any built-ins in the list); sequence <code>SEQ_CALC_ID</code>. The <code>owner</code> column shows <code>SBX_CICD_PIPELINE</code> for each. If an object is missing or owned by another role, go back to file 03 and repeat the step that created it. Ownership matters: see Step 3.15.</p>
+<p>Also decide your mode. If your Probe D in file 02 failed (<code>DCM_MODE = off</code>), read Parts A to F as a transcript and use the <code>#### If DCM is not available (Mode D-off)</code> blocks. Everything else in the pack still works.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<p><strong>Declarative.</strong> You describe the end state ("this table has these columns") and the tool works out the steps. The opposite is imperative: you write the steps ("add this column") and you must know the current state. Lab 1 was imperative; Flyway (Lab 2) is imperative with a bookkeeping table; DCM is declarative.</p>
+<p><strong>DCM project object.</strong> A Snowflake object that lives in a schema (here <code>SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM</code>). It runs plan and deploy, and it stores a snapshot of every deployment (the deployment history). You need one project object per environment. The state lives inside Snowflake, not in a state file on your laptop.</p>
+<p><strong>Definition file.</strong> A text file under <code>sources/definitions/</code> made of <code>DEFINE</code>, <code>GRANT</code> and <code>ATTACH</code> statements. Nothing else is allowed in it: no <code>INSERT</code>, no <code>CREATE</code>. It is a Jinja template, so <code>{{calc_db}}</code> is replaced before it is read. <code>DEFINE</code> behaves like <code>CREATE OR ALTER</code>: create the object if missing, alter it if different, leave it if identical. An object may be defined once across all files.</p>
+<p><strong>Manifest.</strong> The file <code>manifest.yml</code> next to <code>sources/</code>. It lists targets (one per environment: account, project name, owner role, templating configuration) and templating variables.</p>
+<p><strong>Plan.</strong> A dry run. DCM renders the templates, compares the definitions with what the last deployment recorded, and lists CREATE, ALTER and DROP changes. It runs no DDL. <strong>Deploy.</strong> Runs the changes. Important: deploy computes its own fresh changeset. It does not replay your saved plan (you prove this in Step 3.6).</p>
+<p><strong>Managed object.</strong> An object that a deployment created or adopted. DCM only ever drops managed objects. An object that exists but was never defined is invisible to the project. That is why Flyway objects in the same schema are safe (Lab 4).</p>
+<pre><code> definition files (Git)           DCM project object (in Snowflake)          live objects
+ sources/definitions/*.sql  ---&gt;  render Jinja ---&gt; compare with     ---&gt;   tables, procs,
+ manifest.yml (targets, vars)     last deployment snapshot                  sequences, grants
+                                  PLAN = list changes (no DDL)
+                                  DEPLOY = recompute, then run DDL
+</code></pre>
+<p><strong>Project owner role.</strong> The role named as <code>project_owner</code> in the manifest. The deploy runs as that role, and every object it creates is owned by it. It must also own, or hold the role that owns, any object it adopts.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM Projects are declarative with plan then deploy, state is stored in the project object, definition files allow only <code>DEFINE</code>, <code>GRANT</code>, <code>ATTACH</code>, <code>DEFINE</code> behaves like <code>CREATE OR ALTER</code>, and DEPLOY recomputes its changeset (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview and .../dcm-projects-use, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G17]:</strong> NAIC documents say DCM Projects reached general availability in August 2026. The overview page read for this pack does not state a date, and some parts (for example plan delta, Streamlit and code bundle entities) are marked preview. How to check at lab time: the Snowflake release notes. Record the result in file 13.</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="part-a-a-throwaway-project-to-learn-the-mechanics-about-40-min">Part A: a throwaway project to learn the mechanics (about 40 min)</h3>
+<p>You start in <code>SBX_INT.LAB3_SCRATCH</code> with a tiny project so that mistakes cost nothing. The real engine comes in Part B.</p>
+<h3 id="step-31-create-the-scratch-project-files">Step 3.1 Create the scratch project files</h3>
+<p>Run in: <strong>Terminal</strong>. Create the folders and the files (use your editor).</p>
+<pre><code>mkdir -p dcm/lab3_scratch/sources/definitions
+snow --version
+</code></pre>
+<p><code>dcm/lab3_scratch/manifest.yml</code>:</p>
+<pre><code class="language-yaml">manifest_version: 2
+type: DCM_PROJECT
+default_target: 'SCRATCH'
+targets:
+  SCRATCH:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_INT.LAB3_SCRATCH.LAB3_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'SCRATCH'
+templating:
+  defaults:
+    db: 'SBX_INT'
+  configurations:
+    SCRATCH: { db: 'SBX_INT' }
+</code></pre>
+<p><code>dcm/lab3_scratch/sources/definitions/scratch.sql</code>:</p>
+<pre><code class="language-sql">DEFINE SEQUENCE {{db}}.LAB3_SCRATCH.SEQ_DEMO start with 100 increment by 1 noorder;
+
+DEFINE TABLE {{db}}.LAB3_SCRATCH.DEMO_ORDERS (
+    ORDER_ID NUMBER(38,0) NOT NULL,
+    ORDER_STATUS VARCHAR(20) DEFAULT 'NEW',
+    primary key (ORDER_ID)
+);
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G03]:</strong> the exact <code>DEFINE SEQUENCE</code> and <code>DEFINE PROCEDURE</code> grammar. The shapes in this lab are copied from definition files that worked in the NAIC DCM proof of concept (for example <code>DEFINE SEQUENCE ... start with 2001 increment by 1 noorder;</code>). The per-object public grammar pages were not reachable when this pack was written. How to check at lab time: follow the links on https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities. If a statement is rejected, the error message shows the expected form. Record the result in file 13.</p>
+</blockquote>
+<p>The repository <code>.gitignore</code> from file 02 already contains <code>out/</code>, so saved plans are never committed.</p>
+<p>You should see: two files, no output. Replace <code>&lt;ACCOUNT_IDENTIFIER&gt;</code> with your real org-account value in the manifest. An account identifier is not a secret, but if you prefer to keep the committed file generic, keep the placeholder in Git and edit a local copy.</p>
+<h3 id="step-32-create-the-project-object-and-read-the-first-plan">Step 3.2 Create the project object and read the first plan</h3>
+<p>Run in: <strong>Terminal</strong>.</p>
+<pre><code>snow dcm create --target SCRATCH --from dcm/lab3_scratch --if-not-exists -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target SCRATCH --from dcm/lab3_scratch --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+ls dcm/lab3_scratch/out/
+</code></pre>
+<p>Why the extra flags: targets do not choose the connection, account or role. The CLI only warns on a mismatch. You always pass <code>-c</code> and <code>--role</code> yourself.</p>
+<p>You should see: a plan with CREATE entries for the sequence and the table, and nothing dropped. <code>ls</code> shows the saved plan file. Write down its exact name.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G04]:</strong> the docs disagree on the saved file name (<code>plan.json</code> on the CLI page, <code>plan_result.json</code> on the files page). The rest of the pack assumes <code>plan_result.json</code>. How to check at lab time: the <code>ls</code> above. Record the real name in file 13 and use it everywhere below.</p>
+<p><strong>TO-CONFIRM [TC-G02]:</strong> whether <code>CREATE DCM PROJECT</code> works in your trial. If this step fails with an error that mentions the DCM project, copy the exact text into file 13, set <code>DCM_MODE = off</code> in the resume table in file 00 and switch to the Mode D-off blocks.</p>
+</blockquote>
+<p>Create the helper that summarises a plan. Run in: <strong>Terminal</strong>. Create <code>scripts/plan_summary.py</code>:</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;Print a short summary of a DCM plan JSON (docs shape: version 2, changeset[]).
+Usage: python3 scripts/plan_summary.py &lt;plan.json&gt;&quot;&quot;&quot;
+import collections
+import json
+import sys
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(&quot;Usage: plan_summary.py &lt;plan.json&gt;&quot;)
+    with open(sys.argv[1]) as fh:
+        plan = json.load(fh)
+    changes = plan.get(&quot;changeset&quot;, [])
+    counts = collections.Counter(c.get(&quot;type&quot;, &quot;?&quot;) for c in changes)
+    print(&quot;changes: %d  %s&quot; % (len(changes), &quot;  &quot;.join(&quot;%s=%d&quot; % kv for kv in sorted(counts.items()))))
+    for c in changes:
+        oid = c.get(&quot;object_id&quot;, {})
+        print(&quot;%-7s %-10s %s&quot; % (c.get(&quot;type&quot;, &quot;?&quot;), oid.get(&quot;domain&quot;, &quot;?&quot;), oid.get(&quot;fqn&quot;, oid.get(&quot;name&quot;, &quot;?&quot;))))
+    if not changes:
+        print(&quot;EMPTY changeset: the project is in sync&quot;)
+
+
+main()
+</code></pre>
+<pre><code>python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+</code></pre>
+<p>You should see: <code>changes: 2  CREATE=2</code> and two lines (one SEQUENCE, one TABLE). If a key name differs from the docs shape, open the file with <code>python3 -m json.tool dcm/lab3_scratch/out/plan_result.json</code> and adjust the script. Lab 6 builds a stricter <code>check_plan_for_drops.py</code> from this script.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> the plan JSON has <code>version: 2</code>, <code>metadata</code>, and <code>changeset[]</code> with <code>type</code> (CREATE, ALTER or DROP) and <code>object_id{domain,name,fqn,database,schema}</code>; an empty array means the project definitions are already in sync (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16).</p>
+</blockquote>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Replace Steps 3.2 to 3.7 with a worksheet transcript. Because <code>DEFINE</code> is <code>CREATE OR ALTER</code>, you can reproduce the per-object result by hand:</p>
+<pre><code class="language-sql">CREATE OR ALTER TABLE SBX_INT.LAB3_SCRATCH.DEMO_ORDERS (
+    ORDER_ID NUMBER(38,0) NOT NULL,
+    ORDER_STATUS VARCHAR(20) DEFAULT 'NEW',
+    primary key (ORDER_ID)
+);
+</code></pre>
+<p>Run it twice. The second run changes nothing, which is what an empty re-plan means. What you cannot reproduce is the project-wide plan, the drop of undefined objects and the deployment history; read those parts as explanation only.</p>
+<h3 id="step-33-deploy-then-re-plan-the-empty-plan">Step 3.3 Deploy, then re-plan (the empty plan)</h3>
+<p>Run in: <strong>Terminal</strong>.</p>
+<pre><code>snow dcm deploy --target SCRATCH --from dcm/lab3_scratch --alias scratch-v1 --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target SCRATCH --from dcm/lab3_scratch --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+</code></pre>
+<p>You should see: the deploy reports the two objects created, and the second plan ends with <code>EMPTY changeset</code>. This empty plan is the success signal used all the way through the pack ("deploy, then a fresh full re-plan must show no changes").</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SHOW ENTITIES IN DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM;
+SHOW DEPLOYMENTS IN DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM;
+</code></pre>
+<p>You should see: two managed entities (the sequence and the table), and one deployment named <code>DEPLOYMENT$1</code> with the alias <code>scratch-v1</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-01]:</strong> exact column names of <code>SHOW ENTITIES</code> and <code>SHOW DEPLOYMENTS</code> output. How to check at lab time: read the result grid. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-34-add-a-column-to-a-table-that-holds-data">Step 3.4 Add a column to a table that holds data</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>). Put some rows in the table by hand. Rows are not something DCM manages, so this is allowed.</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.LAB3_SCRATCH.DEMO_ORDERS (ORDER_ID, ORDER_STATUS) VALUES (1, 'NEW'), (2, 'DONE'), (3, 'NEW');
+SELECT COUNT(*) FROM SBX_INT.LAB3_SCRATCH.DEMO_ORDERS;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>. Edit <code>scratch.sql</code>: add one column inside the table, after <code>ORDER_STATUS</code>:</p>
+<pre><code class="language-sql">    ORDER_NOTE VARCHAR(100),
+</code></pre>
+<pre><code>snow dcm plan --target SCRATCH --from dcm/lab3_scratch --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+snow dcm deploy --target SCRATCH --from dcm/lab3_scratch --alias scratch-v2 -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+</code></pre>
+<p>You should see: exactly one change, an ALTER on <code>DEMO_ORDERS</code>, no CREATE and no DROP. After the deploy, <code>SELECT COUNT(*)</code> still returns 3 and <code>DESC TABLE SBX_INT.LAB3_SCRATCH.DEMO_ORDERS</code> shows <code>ORDER_NOTE</code>.</p>
+<p>Compare with Lab 1: there you wrote <code>ALTER TABLE ... ADD COLUMN</code> yourself and had to know the table did not yet have the column. Here you edited the end state and the tool worked out the ALTER.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DEPLOY creates missing objects, alters differing ones, skips identical ones; the documented table limitations include reordering columns and changing to incompatible types (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities, read 2026-11-16). Try moving <code>ORDER_NOTE</code> before <code>ORDER_STATUS</code> and plan again to see the reorder limitation; record what the plan says. Do not deploy that edit.</p>
+</blockquote>
+<h3 id="step-35-drift-change-an-object-by-hand-then-plan">Step 3.5 Drift: change an object by hand, then plan</h3>
+<p>Drift means the live object no longer matches its definition. In Lab 1 you needed a hand-written "drift detective" query. A DCM plan is that detective for free.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.LAB3_SCRATCH.DEMO_ORDERS ADD COLUMN SNEAKY_COLUMN VARCHAR(10);
+</code></pre>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm plan --target SCRATCH --from dcm/lab3_scratch --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+</code></pre>
+<p>You should see: one ALTER on <code>DEMO_ORDERS</code>. The definition does not mention <code>SNEAKY_COLUMN</code>, so the plan proposes to bring the table back to the definition.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-02]:</strong> what exactly the ALTER does with a column that exists live but not in the definition (the expectation is that it removes the column, which would lose that column's data). How to check at lab time: open the <code>changes</code> list of that entry with <code>python3 -m json.tool dcm/lab3_scratch/out/plan_result.json</code>. Record the result in file 13. Do not deploy yet; Step 3.6 uses this drift.</p>
+</blockquote>
+<p>Contrast with the Flyway lesson from Lab 2: Flyway never looks at the live schema, so it would report nothing here.</p>
+<h3 id="step-36-plan-versus-deploy-deploy-recomputes">Step 3.6 Plan versus deploy: deploy recomputes</h3>
+<p>Right now the live table has the drifted column. Your last plan showed one ALTER. Now change the world a second time, after that plan, and deploy without planning again.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.LAB3_SCRATCH.DEMO_ORDERS ADD COLUMN SECOND_SNEAKY VARCHAR(10);
+</code></pre>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm deploy --target SCRATCH --from dcm/lab3_scratch --alias scratch-v3 --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+ls dcm/lab3_scratch/out/
+</code></pre>
+<p>You should see: the deploy handled both sneaky columns, although the plan you read only knew about the first. The saved deploy result lists the actual changes. Run <code>snow dcm plan ...</code> once more: the changeset is empty.</p>
+<p>The lesson: a plan is a review aid, not a contract. In CI you must run a fresh full plan immediately before deploying and apply your checks (such as "no DROP") to that plan, and then check the deploy result too. Lab 6 does this.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DEPLOY recomputes a fresh changeset and does not replay a saved plan; PLAN DELTA does not detect drift, so run a full PLAN before deploy (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G04]:</strong> the file name for the saved deploy result (<code>deploy_result.json</code> is the name on the files page). Check with <code>ls</code>.</p>
+</blockquote>
+<h3 id="step-37-the-danger-remove-a-definition-and-the-object-is-dropped">Step 3.7 The danger: remove a definition and the object is dropped</h3>
+<p>First restore the table to its definition by deploying (this clears the two sneaky columns from Steps 5.5 and 5.6 if any remain), then add a second table that will hold rows.</p>
+<p>Run in: <strong>Terminal</strong>. Append to <code>scratch.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE {{db}}.LAB3_SCRATCH.DEMO_PRECIOUS (
+    ITEM_ID NUMBER(38,0) NOT NULL,
+    ITEM_NAME VARCHAR(50),
+    primary key (ITEM_ID)
+);
+</code></pre>
+<pre><code>snow dcm deploy --target SCRATCH --from dcm/lab3_scratch --alias scratch-v4 -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">INSERT INTO SBX_INT.LAB3_SCRATCH.DEMO_PRECIOUS VALUES (1, 'irreplaceable row one'), (2, 'irreplaceable row two');
+SELECT COUNT(*) FROM SBX_INT.LAB3_SCRATCH.DEMO_PRECIOUS;
+</code></pre>
+<p>Now delete the <code>DEFINE TABLE ... DEMO_PRECIOUS</code> block from <code>scratch.sql</code> (as if a merge conflict or a tidy-up removed it), then read the plan:</p>
+<pre><code>snow dcm plan --target SCRATCH --from dcm/lab3_scratch --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+</code></pre>
+<p>You should see: a line starting <code>DROP</code> for <code>DEMO_PRECIOUS</code>. Nothing in the plan says "this table has 2 rows". A plan shows structure, not data.</p>
+<p>Deploy it (this is a throwaway schema, so this is the experiment):</p>
+<pre><code>snow dcm deploy --target SCRATCH --from dcm/lab3_scratch --alias scratch-v5-drop -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT COUNT(*) FROM SBX_INT.LAB3_SCRATCH.DEMO_PRECIOUS;
+</code></pre>
+<p>You should see: an error that the table does not exist. The rows went with it.</p>
+<p>Discussion to write in your notes:</p>
+<ol>
+<li>Who would have caught this in review? A reviewer sees a deleted file, not a dropped table with data.</li>
+<li>What is the recovery? Standard tables have Time Travel, so <code>UNDROP TABLE SBX_INT.LAB3_SCRATCH.DEMO_PRECIOUS;</code> can bring it back within the retention period. Try it. Hybrid tables cannot be undropped, and clone databases are created with retention 0 (Lab 5), so in those places there is no way back.</li>
+<li>After <code>UNDROP</code>, is the table managed again? Run <code>SHOW ENTITIES IN DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM;</code>.</li>
+</ol>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-03]:</strong> whether an undropped table is managed by the project again, and what a plan says about it now that its definition is gone (a second DROP is expected). How to check at lab time: the two commands above. Record the result in file 13.</p>
+<p><strong>VERIFIED:</strong> removing a <code>DEFINE</code> and deploying drops the object, and the docs say to always review PLAN before DEPLOY; the sample CI workflow blocks drops of databases, schemas, tables and stages by reading the saved plan JSON (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage and .../dcm-projects-cicd, read 2026-11-16).</p>
+</blockquote>
+<p>How NAIC deals with it (from the target architecture): an exact-FQN DROP approval file (no wildcards, an unused approval fails the run), checked by a script against the fresh full plan. You build the sandbox version in Lab 6 (<code>scripts/check_plan_for_drops.py</code>).</p>
+<p>To keep the object you wanted: restore the <code>DEFINE</code> block, or unmanage without dropping:</p>
+<pre><code class="language-sql">SELECT SYSTEM$UNMANAGE_ENTITY_FROM_DCM_PROJECT('SBX_INT.LAB3_SCRATCH.LAB3_DCM', 'TABLE', 'SBX_INT.LAB3_SCRATCH.DEMO_PRECIOUS');
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> this function removes an entity from management without dropping it, after which you must also delete the statement from the files or the next deploy manages it again (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage, read 2026-11-16). </p>
+<p><strong>TO-CONFIRM [TC-05-10]:</strong> the <code>'TABLE'</code> type string in that call is an assumption from the docs example <code>'DYNAMIC TABLE'</code>. How to check at lab time: run it; if it errors, read the message and try <code>'TABLE'</code> in another spelling from the docs page. Record the working form in file 13.</p>
+</blockquote>
+<h3 id="part-b-adopt-the-lab-1-objects-into-the-real-engine-project-about-60-min">Part B: adopt the Lab 1 objects into the real engine project (about 60 min)</h3>
+<p>Adoption means putting an existing, hand-made object under management without changing it. The rule: write a definition that matches the live object exactly, plan, and check that the plan changes nothing real.</p>
+<h3 id="step-38-write-definitions-from-the-live-objects">Step 3.8 Write definitions from the live objects</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>). Ask Snowflake for the real DDL. This is what NAIC did (the sequence file in the POC carries the comment "Source: GET_DDL").</p>
+<pre><code class="language-sql">SELECT GET_DDL('SEQUENCE',  'SBX_INT.CALC_SUPPORT.SEQ_CALC_ID');
+SELECT GET_DDL('TABLE',     'SBX_INT.CALC_SUPPORT.CALCULATIONS', TRUE);
+SELECT GET_DDL('TABLE',     'SBX_INT.CALC_SUPPORT.FORMULAS', TRUE);
+SELECT GET_DDL('TABLE',     'SBX_INT.CALC_SUPPORT.FORMULA_CATEGORIES', TRUE);
+SELECT GET_DDL('PROCEDURE', 'SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(VARCHAR, VARCHAR)', TRUE);
+SELECT GET_DDL('PROCEDURE', 'SBX_INT.CALC_SUPPORT.SP_REGISTER_CALCULATION(VARCHAR, VARCHAR)', TRUE);
+</code></pre>
+<p>Convert each result into a file by four rules: (1) change <code>create or replace</code> to <code>DEFINE</code>; (2) replace the text <code>SBX_INT.CALC_SUPPORT</code> with <code>{{calc_db}}.{{calc_schema}}</code>; (3) one object per file, file name equal to the object name; (4) keep the body text exactly as it is.</p>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>mkdir -p dcm/calc_engine/sources/definitions/{sequences,tables,functions,views,procedures,grants}
+</code></pre>
+<p>Start with this minimal <code>dcm/calc_engine/manifest.yml</code> (Step 3.14 expands it):</p>
+<pre><code class="language-yaml">manifest_version: 2
+type: DCM_PROJECT
+default_target: 'INT'
+targets:
+  INT:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'INT'
+templating:
+  defaults:
+    calc_db: 'SBX_INT'
+    calc_schema: 'CALC_SUPPORT'
+  configurations:
+    INT: { calc_db: 'SBX_INT', calc_schema: 'CALC_SUPPORT' }
+</code></pre>
+<p>Expected shapes (your Lab 1 columns are the truth; if <code>GET_DDL</code> shows a different type, follow <code>GET_DDL</code>). <code>sequences/SEQ_CALC_ID.sql</code>:</p>
+<pre><code class="language-sql">-- Source: GET_DDL on SBX_INT.CALC_SUPPORT.SEQ_CALC_ID
+DEFINE SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_CALC_ID start with 2001 increment by 1 noorder;
+</code></pre>
+<p><code>tables/CALCULATIONS.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE {{calc_db}}.{{calc_schema}}.CALCULATIONS (
+    CALC_ID NUMBER(38,0) NOT NULL DEFAULT {{calc_db}}.{{calc_schema}}.SEQ_CALC_ID.NEXTVAL,
+    CALC_NAME VARCHAR(255),
+    CALC_STATUS VARCHAR(10) DEFAULT 'ACTIVE',
+    SOURCE_CALC_ID NUMBER(38,0),
+    CREATED_BY VARCHAR(255),
+    CREATED_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    primary key (CALC_ID)
+);
+</code></pre>
+<p><code>tables/FORMULA_CATEGORIES.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE {{calc_db}}.{{calc_schema}}.FORMULA_CATEGORIES (
+    CATEGORY_ID NUMBER(38,0) NOT NULL autoincrement start 1 increment 1 noorder,
+    CATEGORY_NAME VARCHAR(255),
+    CREATED_BY VARCHAR(255),
+    primary key (CATEGORY_ID)
+);
+</code></pre>
+<p><code>tables/FORMULAS.sql</code> follows the same method (<code>FORMULA_ID</code>, <code>CALC_ID</code>, <code>FORMULA_TEXT</code> plus whatever Lab 1 created). <code>procedures/SP_ADD_CATEGORY.sql</code> (idempotent insert; this is the shape used in the NAIC POC, with names qualified so the procedure does not depend on the caller's current schema):</p>
+<pre><code class="language-sql">DEFINE PROCEDURE {{calc_db}}.{{calc_schema}}.SP_ADD_CATEGORY(P_CATEGORY_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$BEGIN
+    INSERT INTO {{calc_db}}.{{calc_schema}}.FORMULA_CATEGORIES (CATEGORY_NAME, CREATED_BY)
+    SELECT :P_CATEGORY_NAME, :P_USER
+    WHERE NOT EXISTS (SELECT 1 FROM {{calc_db}}.{{calc_schema}}.FORMULA_CATEGORIES WHERE CATEGORY_NAME = :P_CATEGORY_NAME);
+    RETURN 'OK';
+END$$;
+</code></pre>
+<p><code>procedures/SP_REGISTER_CALCULATION.sql</code>: take the body from <code>sql/lab1/procedures_v1.sql</code> (the restored v1) and wrap it the same way.</p>
+<p>If your Lab 1 body differs from the text above (for example it used unqualified names), a first plan will show an ALTER for that procedure, because DCM treats a changed handler body as a full replace. Either copy your live body exactly (pure adoption) or accept the change on purpose. Both are valid; deciding on purpose is the habit being trained.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G03]:</strong> <code>DEFINE PROCEDURE ... AS $$...$$</code> mirrors <code>CREATE OR ALTER PROCEDURE</code>. The shape above is from the NAIC POC. If rejected, read the error and check the supported-entities page.</p>
+</blockquote>
+<h3 id="step-39-create-the-project-plan-and-read-an-adoption-plan">Step 3.9 Create the project, plan, and read an adoption plan</h3>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm create --target INT --from dcm/calc_engine --if-not-exists -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>: record evidence before you touch anything.</p>
+<pre><code class="language-sql">SELECT COUNT(*) AS ROWS_N, HASH_AGG(*) AS ROWS_HASH FROM SBX_INT.CALC_SUPPORT.CALCULATIONS;
+SHOW GRANTS ON TABLE SBX_INT.CALC_SUPPORT.CALCULATIONS;
+</code></pre>
+<p>Write down <code>ROWS_N</code>, <code>ROWS_HASH</code> and how many grant rows the <code>SHOW GRANTS</code> returned.</p>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: no <code>DROP</code> and no <code>CREATE</code> lines. In the NAIC POC the first plan of an existing set of objects showed every object as an ALTER (70 entities, 0 create, 70 alter, 0 drop; 69 of them adoption-only, one real change). Expect the same kind of picture: one ALTER per defined object, and any entry that is more than adoption points at a definition that does not match the live object.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-04]:</strong> how the public docs describe an adoption plan. The docs say objects that existed before and were newly added to the project become managed; the "ALTER with set PROJECT" picture above comes from the NAIC POC, not from the public pages. How to check at lab time: open one entry with <code>python3 -m json.tool</code> and read <code>changes</code>. Record the result in file 13.</p>
+</blockquote>
+<p>Pass criteria for adoption (use them every time):</p>
+<ol>
+<li>Zero DROP.</li>
+<li>Zero CREATE (everything already exists).</li>
+<li>Every ALTER is explained: pure adoption, or a change you decided on.</li>
+<li>After deploy: same row count and hash, same grants, and an empty re-plan.</li>
+</ol>
+<p>If a table entry proposes a real change, stop. Fix the definition to match <code>GET_DDL</code> instead of deploying the difference.</p>
+<h3 id="step-310-deploy-the-adoption-and-prove-nothing-changed">Step 3.10 Deploy the adoption and prove nothing changed</h3>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code>snow dcm deploy --target INT --from dcm/calc_engine --alias int-adopt --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>: repeat the evidence queries from Step 3.9.</p>
+<p>You should see: the final summary says <code>EMPTY changeset</code>, <code>ROWS_N</code> and <code>ROWS_HASH</code> are identical, and the grant list is the same. <code>SHOW ENTITIES IN DCM PROJECT SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM;</code> lists your six adopted objects.</p>
+<p>You have now done what the NAIC roadmap calls "DCM core re-adoption in INT" in miniature.</p>
+<h3 id="step-311-edit-a-procedure-in-place-and-keep-its-grants">Step 3.11 Edit a procedure in place (and keep its grants)</h3>
+<p>In Lab 1 a <code>CREATE OR REPLACE PROCEDURE</code> silently overwrote the other developer's version and wiped grants. See the difference.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>: add a hand-made grant that DCM does not know about.</p>
+<pre><code class="language-sql">GRANT USAGE ON PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(VARCHAR, VARCHAR) TO ROLE SBX_CALC_READER;
+SHOW GRANTS ON PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(VARCHAR, VARCHAR);
+</code></pre>
+<p>Run in: <strong>Terminal</strong>. First make a comment-only edit <strong>inside the body</strong> (NAIC found that a comment above <code>DEFINE</code> may not register as a change, so test edits go inside the body). Add <code>-- touched</code> as the first line after <code>$$BEGIN</code>, then plan:</p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: exactly one ALTER, on <code>SP_ADD_CATEGORY</code>. Per the docs, the plan does not show a line-by-line body difference for procedures: a changed handler is treated as a full replace.</p>
+<p>Now make a real change: replace <code>RETURN 'OK';</code> with <code>RETURN 'OK: ' || :P_CATEGORY_NAME;</code>, remove the <code>-- touched</code> line, then deploy and re-plan:</p>
+<pre><code>snow dcm deploy --target INT --from dcm/calc_engine --alias int-proc-edit -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY('RATIO', CURRENT_USER());
+SHOW GRANTS ON PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(VARCHAR, VARCHAR);
+</code></pre>
+<p>You should see: the call returns <code>OK: RATIO</code>, the re-plan is empty, and the grant to <code>SBX_CALC_READER</code> is still listed.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-05]:</strong> that the hand-made grant survives the procedure change. The NAIC POC observed that grants are "altered in place" and survive edits, but the public docs do not say so explicitly. If the grant disappears, that is also a finding: write it down and see Step 3.13, where grants are declared so they are reapplied on every deploy.</p>
+</blockquote>
+<h3 id="step-312-add-the-remaining-engine-definitions">Step 3.12 Add the remaining engine definitions</h3>
+<p>The contract for later labs expects the rest of the miniature engine to be under DCM. Add these files. Everything here is a CREATE, so the plan must show CREATE lines only.</p>
+<p><code>sequences/SEQ_FORMULA_ID.sql</code>, <code>SEQ_EXECUTION_ID.sql</code>, <code>SEQ_WORKFLOW_ID.sql</code>, <code>SEQ_AUDIT_EVENT_ID.sql</code> (one file each, same pattern):</p>
+<pre><code class="language-sql">DEFINE SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_FORMULA_ID start with 1 increment by 1 noorder;
+</code></pre>
+<p><code>tables/EXECUTIONS.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE {{calc_db}}.{{calc_schema}}.EXECUTIONS (
+    EXECUTION_ID NUMBER(38,0) NOT NULL DEFAULT {{calc_db}}.{{calc_schema}}.SEQ_EXECUTION_ID.NEXTVAL,
+    CALC_ID NUMBER(38,0),
+    STATUS VARCHAR(20),
+    ROWS_WRITTEN NUMBER(38,0),
+    STARTED_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    primary key (EXECUTION_ID)
+);
+</code></pre>
+<p><code>tables/DATA_CHANGE_LOG.sql</code> (the ledger that Lab 4 data changes write to):</p>
+<pre><code class="language-sql">DEFINE TABLE {{calc_db}}.{{calc_schema}}.DATA_CHANGE_LOG (
+    CHANGE_ID NUMBER(38,0) NOT NULL autoincrement start 1 increment 1 noorder,
+    CHANGE_VERSION VARCHAR(40) NOT NULL,
+    DESCRIPTION VARCHAR(500),
+    EXPECTED_ROWS NUMBER(38,0),
+    ROWS_AFFECTED NUMBER(38,0),
+    APPLIED_BY VARCHAR(255) DEFAULT CURRENT_USER(),
+    APPLIED_AT TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    primary key (CHANGE_ID)
+);
+</code></pre>
+<p><code>views/ENV_CONFIG.sql</code> (same Jinja <code>if</code> shape as the NAIC file; it shows that templating can contain logic, not only names). In INT the redirect map is <code>[]</code>; in a clone (Lab 5) it maps INT names to the clone:</p>
+<pre><code class="language-sql">DEFINE VIEW {{calc_db}}.{{calc_schema}}.ENV_CONFIG(CONFIG_KEY, CONFIG_VALUE) as
+SELECT 'HOME_SCHEMA' AS CONFIG_KEY, TO_VARIANT('{{calc_db}}.{{calc_schema}}') AS CONFIG_VALUE
+UNION ALL
+SELECT 'RESULT_SCHEMA', TO_VARIANT('{{fin_db}}.{{fin_schema}}')
+UNION ALL
+SELECT 'SCHEMA_REDIRECTS', PARSE_JSON('{% if clone_redirects %}[{&quot;from&quot;: &quot;SBX_INT.CALC_SUPPORT.&quot;, &quot;to&quot;: &quot;{{calc_db}}.CALC_SUPPORT.&quot;}, {&quot;from&quot;: &quot;SBX_INT_FIN.FIN_CALCULATION.&quot;, &quot;to&quot;: &quot;{{calc_db}}.FIN_CALCULATION.&quot;}]{% else %}{{schema_redirects}}{% endif %}');
+</code></pre>
+<p><code>functions/FN_APPLY_REDIRECTS.sql</code>. The NAIC function uses <code>REDUCE</code> and <code>REGEXP_REPLACE</code> over any number of map entries. This miniature handles up to two entries with plain <code>REPLACE</code>, which is enough for the sandbox and easy to read:</p>
+<pre><code class="language-sql">DEFINE FUNCTION {{calc_db}}.{{calc_schema}}.FN_APPLY_REDIRECTS(P_TEXT VARCHAR, P_MAP ARRAY)
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+SELECT IFF(ARRAY_SIZE(P_MAP) &gt; 1,
+           REPLACE(L1, P_MAP[1]:&quot;from&quot;::VARCHAR, P_MAP[1]:&quot;to&quot;::VARCHAR),
+           L1)
+FROM (SELECT IFF(ARRAY_SIZE(P_MAP) &gt; 0,
+                 REPLACE(P_TEXT, P_MAP[0]:&quot;from&quot;::VARCHAR, P_MAP[0]:&quot;to&quot;::VARCHAR),
+                 P_TEXT) AS L1)
+$$;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-06]:</strong> that this scalar SQL function body (a subquery that reads the arguments) is accepted. A plan validates creation only. How to check at lab time: after the deploy below, run <code>SELECT SBX_INT.CALC_SUPPORT.FN_APPLY_REDIRECTS('SBX_INT.CALC_SUPPORT.X', PARSE_JSON('[{"from":"SBX_INT.","to":"SBX_DEV_T."}]'));</code> and expect <code>SBX_DEV_T.CALC_SUPPORT.X</code>. With an empty map <code>[]</code> the text must come back unchanged.</p>
+</blockquote>
+<p><code>procedures/SP_ACTIVATE_DRAFT_CALCULATION.sql</code> (miniature of the real one: promote the draft, retire the source):</p>
+<pre><code class="language-sql">DEFINE PROCEDURE {{calc_db}}.{{calc_schema}}.SP_ACTIVATE_DRAFT_CALCULATION(P_DRAFT_CALC_ID NUMBER, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    v_src NUMBER;
+BEGIN
+    SELECT SOURCE_CALC_ID INTO :v_src
+      FROM {{calc_db}}.{{calc_schema}}.CALCULATIONS
+     WHERE CALC_ID = :P_DRAFT_CALC_ID AND CALC_STATUS = 'DRAFT';
+    IF (:v_src IS NOT NULL) THEN
+        UPDATE {{calc_db}}.{{calc_schema}}.CALCULATIONS SET CALC_STATUS = 'INACTIVE' WHERE CALC_ID = :v_src;
+    END IF;
+    UPDATE {{calc_db}}.{{calc_schema}}.CALCULATIONS SET CALC_STATUS = 'ACTIVE'
+     WHERE CALC_ID = :P_DRAFT_CALC_ID AND CALC_STATUS = 'DRAFT';
+    RETURN 'ACTIVATED ' || :P_DRAFT_CALC_ID;
+END;
+$$;
+</code></pre>
+<p><code>procedures/SP_COMPUTE_MINI_RESULT.sql</code>. Note the deliberately hard-coded INT result table name inside the generated text: the real engine builds SQL from data that contains INT names and rewrites them at run time with the redirect map. There is no <code>SP_RUN_</code> prefix on purpose, to avoid confusion with the real engine procedures you must never call on NAIC.</p>
+<pre><code class="language-sql">DEFINE PROCEDURE {{calc_db}}.{{calc_schema}}.SP_COMPUTE_MINI_RESULT(P_CALC_ID NUMBER, P_PARAMS VARIANT)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    v_map ARRAY;
+    v_exec_id NUMBER;
+    v_sql VARCHAR;
+BEGIN
+    SELECT CONFIG_VALUE::ARRAY INTO :v_map
+      FROM {{calc_db}}.{{calc_schema}}.ENV_CONFIG WHERE CONFIG_KEY = 'SCHEMA_REDIRECTS';
+    INSERT INTO {{calc_db}}.{{calc_schema}}.EXECUTIONS (CALC_ID, STATUS, ROWS_WRITTEN)
+    SELECT :P_CALC_ID, 'SUCCESS', 1;
+    SELECT MAX(EXECUTION_ID) INTO :v_exec_id
+      FROM {{calc_db}}.{{calc_schema}}.EXECUTIONS WHERE CALC_ID = :P_CALC_ID;
+    v_sql := 'INSERT INTO SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE (CALC_ID, EXECUTION_ID, VALUE_NUMBER) SELECT '
+             || :P_CALC_ID || ', ' || :v_exec_id || ', 42';
+    v_sql := {{calc_db}}.{{calc_schema}}.FN_APPLY_REDIRECTS(:v_sql, :v_map);
+    EXECUTE IMMEDIATE :v_sql;
+    RETURN 'OK execution ' || :v_exec_id;
+END;
+$$;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>: plan, read, deploy, re-plan. Because <code>ENV_CONFIG</code> now uses <code>fin_db</code>, <code>fin_schema</code>, <code>clone_redirects</code> and <code>schema_redirects</code>, first replace the manifest with the full version from Step 3.14, then:</p>
+<pre><code>snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+snow dcm deploy --target INT --from dcm/calc_engine --alias int-complete -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+snow dcm plan --target INT --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: the first plan has CREATE lines for 4 sequences, 2 tables, 1 view, 1 function and 2 procedures, plus no DROP; the last plan is empty. Do not call <code>SP_COMPUTE_MINI_RESULT</code> yet; Lab 5 uses it inside a clone.</p>
+<h3 id="step-313-declare-grants-in-the-project">Step 3.13 Declare grants in the project</h3>
+<p>In NAIC, a <code>CREATE OR REPLACE</code> wiped grants, so people re-granted by hand. The POC fixed this with a declared grant in <code>access.sql</code> ("declared grant, reapplied on every deploy"). Do the same for the app role. The role names come from template variables so QA and PROD can use different roles.</p>
+<p><code>dcm/calc_engine/sources/definitions/grants/access.sql</code>:</p>
+<pre><code class="language-sql">GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {{calc_db}}.{{calc_schema}}.CALCULATIONS TO ROLE {{app_role}};
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {{calc_db}}.{{calc_schema}}.FORMULAS TO ROLE {{app_role}};
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {{calc_db}}.{{calc_schema}}.FORMULA_CATEGORIES TO ROLE {{app_role}};
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {{calc_db}}.{{calc_schema}}.EXECUTIONS TO ROLE {{app_role}};
+GRANT SELECT, INSERT ON TABLE {{calc_db}}.{{calc_schema}}.DATA_CHANGE_LOG TO ROLE {{app_role}};
+GRANT USAGE ON SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_CALC_ID TO ROLE {{app_role}};
+GRANT USAGE ON SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_FORMULA_ID TO ROLE {{app_role}};
+GRANT USAGE ON SEQUENCE {{calc_db}}.{{calc_schema}}.SEQ_EXECUTION_ID TO ROLE {{app_role}};
+GRANT USAGE ON PROCEDURE {{calc_db}}.{{calc_schema}}.SP_REGISTER_CALCULATION(VARCHAR, VARCHAR) TO ROLE {{app_role}};
+GRANT USAGE ON PROCEDURE {{calc_db}}.{{calc_schema}}.SP_ADD_CATEGORY(VARCHAR, VARCHAR) TO ROLE {{app_role}};
+GRANT USAGE ON PROCEDURE {{calc_db}}.{{calc_schema}}.SP_ACTIVATE_DRAFT_CALCULATION(NUMBER, VARCHAR) TO ROLE {{app_role}};
+GRANT USAGE ON PROCEDURE {{calc_db}}.{{calc_schema}}.SP_COMPUTE_MINI_RESULT(NUMBER, VARIANT) TO ROLE {{app_role}};
+GRANT SELECT ON TABLE {{calc_db}}.{{calc_schema}}.CALCULATIONS TO ROLE {{reader_role}};
+GRANT SELECT ON TABLE {{calc_db}}.{{calc_schema}}.FORMULAS TO ROLE {{reader_role}};
+GRANT SELECT ON TABLE {{calc_db}}.{{calc_schema}}.FORMULA_CATEGORIES TO ROLE {{reader_role}};
+GRANT SELECT ON TABLE {{calc_db}}.{{calc_schema}}.EXECUTIONS TO ROLE {{reader_role}};
+</code></pre>
+<p>The two Flyway-owned hybrid tables are not in this file. Their grants live inside the Flyway migrations (Lab 4). Note the sequence grants: a table with <code>DEFAULT seq.NEXTVAL</code> fails for a role that has no <code>USAGE</code> on the sequence. The real Calc Admin audit table hit exactly this on 2026-11-03.</p>
+<p>Run in: <strong>Terminal</strong>: plan (expect GRANT creates only, and a plan entry for the earlier hand grant is not expected because DCM ignores grants it did not deploy), deploy with <code>--alias int-grants</code>, re-plan (empty).</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G25]:</strong> public docs say <code>GRANT OWNERSHIP</code> fails in plan or deploy when the object already has other grants unless those are also defined or revoked. Do not add <code>GRANT OWNERSHIP</code> to this file. Part E has an experiment on a scratch object.</p>
+</blockquote>
+<h3 id="part-c-one-set-of-definitions-several-environments-about-20-min">Part C: one set of definitions, several environments (about 20 min)</h3>
+<h3 id="step-314-templating-and-the-one-configuration-rule">Step 3.14 Templating and the one-configuration rule</h3>
+<p>Run in: <strong>Terminal</strong>. Replace <code>dcm/calc_engine/manifest.yml</code> with the full version (this is the version the later labs and the CI workflows use):</p>
+<pre><code class="language-yaml">manifest_version: 2
+type: DCM_PROJECT
+default_target: 'INT'
+targets:
+  INT:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'INT'
+  QA:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_QA.CALC_SUPPORT.CALC_ENGINE_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'QA'
+  PROD:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_PROD.CALC_SUPPORT.CALC_ENGINE_DCM'
+    project_owner: SBX_CICD_PIPELINE
+    templating_config: 'PROD'
+  CLONE:      # always pass the clone project FQN and -D &quot;calc_db='SBX_DEV_&lt;TICKET&gt;'&quot;; SBX_DEV_SET_ON_CLI does not exist on purpose
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_DEV_SET_ON_CLI.CALC_SUPPORT.CALC_ENGINE_DCM'
+    project_owner: SBX_CALC_DEV
+    templating_config: 'CLONE'
+templating:
+  defaults:
+    calc_db: 'SBX_INT'
+    calc_schema: 'CALC_SUPPORT'
+    fin_db: 'SBX_INT_FIN'
+    fin_schema: 'FIN_CALCULATION'
+    app_role: 'SBX_FN_CALC_ENGINE_NP'
+    reader_role: 'SBX_CALC_READER'
+    schema_redirects: '[]'
+    clone_redirects: false
+  configurations:
+    INT:   { calc_db: 'SBX_INT',  fin_db: 'SBX_INT_FIN' }
+    QA:    { calc_db: 'SBX_QA',   fin_db: 'SBX_INT_FIN' }
+    PROD:  { calc_db: 'SBX_PROD', fin_db: 'SBX_INT_FIN' }
+    CLONE: { calc_db: 'SBX_DEV_SET_ON_CLI', fin_db: 'SBX_DEV_SET_ON_CLI', clone_redirects: true }
+</code></pre>
+<p>Variable resolution order, lowest to highest: global defaults, the chosen configuration, then runtime values given with <code>-D</code>/<code>--variable</code>. The CLONE target uses a database name that does not exist (<code>SBX_DEV_SET_ON_CLI</code>) so that forgetting the command-line override fails loudly instead of touching INT. This is the pattern in the NAIC manifest. The manifest itself is not rendered, so the project name cannot take a ticket id; you pass the clone's project name on the command line (Lab 5).</p>
+<p>String values given with <code>-D</code> need inner single quotes, for example <code>-D "calc_db='SBX_DEV_LAB5A'"</code>. Without them the CLI reports an error (NAIC saw error 1510).</p>
+<p>Now the one-configuration rule. This is a plan only. <strong>Never deploy it.</strong></p>
+<pre><code>snow dcm plan --target INT -D &quot;calc_db='SBX_QA'&quot; --from dcm/calc_engine --save-output -c sbx_owner --role SBX_CICD_PIPELINE --warehouse SBX_CALC_WH
+python3 scripts/plan_summary.py dcm/calc_engine/out/plan_result.json
+</code></pre>
+<p>You should see: CREATE lines for every object in <code>SBX_QA.CALC_SUPPORT</code> and DROP lines for the INT objects the INT project manages. The project object remembers what it deployed; switching its rendering to another database reads as "remove INT, create QA".</p>
+<p>The lesson: one project object, one environment. Switching a project between configurations can drop objects. For several environments use one project object each (<code>SBX_INT...</code>, <code>SBX_QA...</code>, <code>SBX_PROD...</code>), exactly as the manifest targets say. Lab 6 deploys QA and PROD that way.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> only one configuration can be deployed per project object at a time and switching can drop objects missing from the new rendering; use distinct project objects for coexisting environments; variable precedence is defaults, configuration, runtime (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use and .../dcm-projects-files, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G20]:</strong> the <code>env_vars</code> and <code>env_secrets</code> manifest layout is not used in this pack. Never put secrets in templating variables because rendered SQL is stored unredacted.</p>
+</blockquote>
+<h3 id="part-d-who-may-do-what-about-20-min">Part D: who may do what (about 20 min)</h3>
+<h3 id="step-315-privileges-on-the-project-object">Step 3.15 Privileges on the project object</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">SHOW GRANTS ON DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM;  -- TO-CONFIRM TC-05-11
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-11]:</strong> the exact form of <code>SHOW GRANTS</code> for a DCM project object. How to check at lab time: if it is rejected, use <code>SHOW GRANTS ON DCM PROJECT</code> from the manage page of the docs, or <code>SHOW GRANTS TO ROLE SBX_CICD_PIPELINE</code>. Record the working form in file 13.</p>
+</blockquote>
+<p>Run in: <strong>Terminal</strong>. Try to plan as the developer role, who has no privilege on the scratch project yet (the project exists only if you have not yet cleaned up the scratch schema; do this before Step 3.22):</p>
+<pre><code>snow dcm plan --target SCRATCH --from dcm/lab3_scratch -c sbx_dev --role SBX_CALC_DEV --warehouse SBX_CALC_WH
+</code></pre>
+<p>You should see: a privilege error. Record the exact text.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">GRANT PLAN ON DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM TO ROLE SBX_CALC_DEV;
+</code></pre>
+<p>Repeat the plan.</p>
+<p>You should see: either a plan, or an error about a temporary stage. Both are findings. The CLI uploads your sources to a temporary stage in the project's schema, so the role also needs a privilege to create one there.</p>
+<p>The key facts to write in your notes:</p>
+<table>
+<thead>
+<tr>
+<th>Privilege on the project</th>
+<th>Lets the role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>READ</td>
+<td>list and describe the project, <code>SHOW ENTITIES</code></td>
+</tr>
+<tr>
+<td>MONITOR</td>
+<td>read deployment history and files (includes READ)</td>
+</tr>
+<tr>
+<td>PLAN</td>
+<td>run <code>EXECUTE DCM PROJECT ... PLAN</code> (includes MONITOR)</td>
+</tr>
+<tr>
+<td>OWNERSHIP</td>
+<td>deploy, preview, test, drop, alter, grant the others</td>
+</tr>
+</tbody>
+</table>
+<p>PLAN runs with the privileges of the project owner role, not the caller. So a role with PLAN can read the DDL of anything the owner can read, through the plan output. Grant it deliberately.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> privilege hierarchy READ &lt; MONITOR &lt; PLAN &lt; OWNERSHIP, and PLAN executes with the owner role's privileges (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-05-07]:</strong> the exact error texts above and whether <code>SBX_CALC_DEV</code> needs an extra stage privilege on <code>LAB3_SCRATCH</code>. Record the results in file 13.</p>
+</blockquote>
+<p>Ownership is the other half. Everything DCM deploys is owned by the project owner role. Adoption works only because Lab 1 created the objects as <code>SBX_CICD_PIPELINE</code>. If a Lab 1 object had been created as <code>SBX_CALC_DEV</code>, the adoption plan or deploy would fail until the pipeline role held that role (the pipeline role does hold <code>SBX_CALC_DEV</code>, see bootstrap) and ownership was handed over. NAIC met this: objects made by <code>SYSADMIN</code> or by an AZ role blocked clones and adoption until everything was moved to <code>CICD_PIPELINE</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-08]:</strong> the literal DCM error text for adopting an object owned by a role the project owner does not hold. No such message was quoted in the sources used for this pack. Optional experiment: as <code>SBX_CALC_DEV</code> create a table in <code>LAB3_SCRATCH</code>, define it in the scratch project and plan. Record the message in file 13.</p>
+</blockquote>
+<h3 id="part-e-what-dcm-cannot-manage-each-proven-about-40-min">Part E: what DCM cannot manage, each proven (about 40 min)</h3>
+<p>All experiments use the scratch project (<code>dcm/lab3_scratch</code>). Reset <code>scratch.sql</code> to the version that deployed cleanly (the sequence, <code>DEMO_ORDERS</code> with <code>ORDER_NOTE</code>, no <code>DEMO_PRECIOUS</code>) before each one, and run <code>snow dcm plan</code> only unless the step says deploy. Use the same flags as Step 3.2.</p>
+<h3 id="step-316-hybrid-tables-are-not-supported">Step 3.16 Hybrid tables are not supported</h3>
+<p>Run in: <strong>Terminal</strong>. Append to <code>scratch.sql</code>, then plan:</p>
+<pre><code class="language-sql">DEFINE HYBRID TABLE {{db}}.LAB3_SCRATCH.DEMO_HYBRID (
+    ID NUMBER(38,0) NOT NULL,
+    primary key (ID)
+);
+</code></pre>
+<p>You should see: a syntax error from the plan (the NAIC POC saw <code>unexpected 'HYBRID'</code>). This works in both Mode H and Mode S, because it is a parse failure, not a table creation. Remove the block again.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> hybrid tables are not in the supported-entities list (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities, read 2026-11-16). The error text above comes from the NAIC POC. How to check at lab time: your own plan output. Record the exact text in file 13.</p>
+</blockquote>
+<p>Covered by: Flyway (Lab 4). In NAIC this is why <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> sit in the Flyway lane.</p>
+<h3 id="step-317-row-data-is-not-supported">Step 3.17 Row data is not supported</h3>
+<p>Append to <code>scratch.sql</code> and plan:</p>
+<pre><code class="language-sql">INSERT INTO {{db}}.LAB3_SCRATCH.DEMO_ORDERS (ORDER_ID) VALUES (99);
+</code></pre>
+<p>You should see: a rejection, because definition files allow only <code>DEFINE</code>, <code>GRANT</code> and <code>ATTACH</code>. Remove the block. Covered by: Flyway data-change migrations (Lab 4), which in NAIC replaced the hand-built <code>data_changes/</code> runner and its <code>DATA_CHANGE_LOG</code> ledger.</p>
+<h3 id="step-318-sequence-counters-on-redeploy">Step 3.18 Sequence counters on redeploy</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">SELECT SBX_INT.LAB3_SCRATCH.SEQ_DEMO.NEXTVAL;
+SELECT SBX_INT.LAB3_SCRATCH.SEQ_DEMO.NEXTVAL;
+SELECT SBX_INT.LAB3_SCRATCH.SEQ_DEMO.NEXTVAL;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>. Make an unrelated change (add <code>ORDER_TAG VARCHAR(10),</code> to <code>DEMO_ORDERS</code>), deploy with <code>--alias scratch-seq1</code>. In the worksheet call <code>NEXTVAL</code> once and write down the value. Then change the sequence definition from <code>increment by 1</code> to <code>increment by 10</code>, deploy with <code>--alias scratch-seq2</code>, and call <code>NEXTVAL</code> once more.</p>
+<p>You should see: the first value after the unrelated change continues from the old counter (<code>103</code> if you started at 100 and called it three times). After the sequence change, record what happens to the counter.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G05]:</strong> whether a sequence definition change keeps or resets the counter. The docs do not say. This matters in NAIC because the 8 engine sequences must not reset (reuse of <code>CALC_ID</code> values would be a data bug). How to check at lab time: the experiment above. Record the result in file 13.</p>
+</blockquote>
+<h3 id="step-319-rename-is-a-drop-and-a-create">Step 3.19 Rename is a drop and a create</h3>
+<p>Run in: <strong>Terminal</strong>. In <code>scratch.sql</code> rename <code>DEMO_ORDERS</code> to <code>DEMO_ORDERS_V2</code> (change the name in the <code>DEFINE</code> line only), then plan and read it:</p>
+<pre><code>python3 scripts/plan_summary.py dcm/lab3_scratch/out/plan_result.json
+</code></pre>
+<p>You should see: a DROP for <code>DEMO_ORDERS</code> and a CREATE for <code>DEMO_ORDERS_V2</code>. DCM sees two different objects. It has no notion of "same table, new name". If you deploy (do so in this scratch schema), the new table is empty and the 3 rows are gone, unless you recover with <code>UNDROP TABLE SBX_INT.LAB3_SCRATCH.DEMO_ORDERS;</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G06]:</strong> the docs do not describe renames at all. The drop plus create reading is inferred by NAIC and the architecture's rename protocol; this experiment is the proof. Record the plan text in file 13.</p>
+</blockquote>
+<p>Covered by: an explicit Flyway rename plus a coordinated DCM definition change. You do that in Lab 4 with <code>FORMULA_CATEGORIES</code> becoming <code>CALC_CATEGORIES</code>.</p>
+<h3 id="step-320-users-resource-monitors-and-other-account-objects">Step 3.20 Users, resource monitors and other account objects</h3>
+<p>Append each of these on its own to <code>scratch.sql</code> and plan. They are expected to be rejected:</p>
+<pre><code class="language-sql">DEFINE RESOURCE MONITOR SBX_ZZ_RM WITH CREDIT_QUOTA = 1;
+DEFINE USER SBX_ZZ_USER;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-05-09]:</strong> the exact errors. The supported-entities page lists no users, integrations, resource monitors or clones, and says a grant that mentions a user does not mean DCM manages the user. Record the messages in file 13. Covered by: the platform lane (Terraform in NAIC, the bootstrap SQL in the sandbox).</p>
+</blockquote>
+<h3 id="step-321-grant-subtleties">Step 3.21 Grant subtleties</h3>
+<p>Two experiments in the scratch project.</p>
+<ol>
+<li>DCM ignores grants it did not deploy. Hand-grant <code>SELECT</code> on <code>DEMO_ORDERS_V2</code> (or <code>DEMO_ORDERS</code>, whichever exists) to <code>SBX_CALC_READER</code>, then plan. You should see no change for that grant. (The NAIC POC found about 214 Terraform-made future grants on the engine objects that never appeared in plans.)</li>
+<li><code>GRANT OWNERSHIP</code> with pre-existing grants. While that hand grant exists, append <code>GRANT OWNERSHIP ON TABLE {{db}}.LAB3_SCRATCH.DEMO_ORDERS_V2 TO ROLE SBX_CALC_DEV;</code> and plan. The project owner (<code>SBX_CICD_PIPELINE</code>) holds <code>SBX_CALC_DEV</code> through the bootstrap hierarchy, so the owner-lockout check passes. Expect the plan to fail because the table has other grants.</li>
+</ol>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>COPY CURRENT GRANTS</code> and <code>REVOKE CURRENT GRANTS</code> are not available for <code>GRANT OWNERSHIP</code> in DCM, and a pre-existing grant makes PLAN or DEPLOY of the ownership grant fail unless the grant is also defined or revoked first (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G25]:</strong> the observed behaviour and error text in your account. Record them in file 13.</p>
+</blockquote>
+<h3 id="part-f-what-drop-dcm-project-does-about-10-min">Part F: what <code>DROP DCM PROJECT</code> does (about 10 min)</h3>
+<h3 id="step-322-drop-the-project-and-look-at-what-is-left">Step 3.22 Drop the project and look at what is left</h3>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>), against the scratch project only:</p>
+<pre><code class="language-sql">SELECT COUNT(*) FROM SBX_INT.LAB3_SCRATCH.DEMO_ORDERS_V2;
+DROP DCM PROJECT SBX_INT.LAB3_SCRATCH.LAB3_DCM;
+SHOW TABLES IN SCHEMA SBX_INT.LAB3_SCRATCH;
+</code></pre>
+<p>You should see: the table is still there and can still be queried. Dropping the project object removes the management and the deployment history, not the managed objects. (This is what happened in NAIC INT on 2026-11-11: engine objects, rows and grants stayed in place and unmanaged.) What you lose is the project's memory of what it managed, so a later project must adopt the objects again, which is why the Part B adoption routine matters.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> dropping the project object alone leaves managed objects in place as unmanaged and deletes the deployment-history artifacts; <code>EXECUTE DCM PROJECT &lt;p&gt; PURGE</code> drops everything it manages (non-production only) (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G26]:</strong> the flags of <code>snow dcm purge</code>, <code>drop</code> and <code>drop-deployment</code>. Check with <code>snow dcm purge --help</code> before using them; this lab uses the SQL <code>DROP DCM PROJECT</code>.</p>
+</blockquote>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>What is the difference between a DCM project object and the definition files in Git?</li>
+<li>After a clean deploy, what must a fresh full plan show, and why do you run it?</li>
+<li>You delete <code>FORMULAS.sql</code> in a merge by mistake. What does the next deploy do, and what will the plan not tell you?</li>
+<li>Why can a saved plan not be treated as an approval of what a deploy will do?</li>
+<li>Why did adoption of the Lab 1 objects work without ownership changes?</li>
+<li>Your colleague hand-created a hybrid table in the same schema. Does DCM drop it on the next deploy? Why or why not?</li>
+<li>Why does the manifest's CLONE target point at a database that does not exist?</li>
+<li>Name three things DCM cannot manage and the tool that covers each.</li>
+</ol>
+<details>
+<summary>Answers</summary>
+
+1. The project object lives in Snowflake and holds the deployment history and the record of managed objects; the files are the desired state you give it each time.
+2. An empty changeset. It proves the live state equals the definitions, including after any out-of-band change.
+3. It drops the table (and its rows) because it is managed and no longer defined. The plan shows a DROP but not how many rows are lost. Time Travel `UNDROP` is the recovery for a standard table.
+4. Deploy recomputes its own changeset from the live state at deploy time (Step 3.6).
+5. Lab 1 created them as `SBX_CICD_PIPELINE`, which is the project owner role.
+6. No. DCM only drops objects it manages. An object that was never defined is invisible to the project.
+7. So that forgetting the `-D` override fails with "database not found" instead of deploying over INT.
+8. Hybrid tables, row data and renames go to Flyway; users and resource monitors go to the platform lane (Terraform or bootstrap SQL). Also acceptable: grants on objects it does not own, and package or Streamlit artifacts (artifact pipeline).
+
+</details>
+
+<h2 id="7-break-it">7. Break it</h2>
+<p>Scenario: a developer hot-fixes a procedure in Snowsight, as the team used to do in INT.</p>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>): edit <code>SP_ADD_CATEGORY</code> by hand with <code>CREATE OR REPLACE PROCEDURE</code>, changing only the <code>RETURN</code> text to <code>'HOTFIX'</code>. Call it and see <code>HOTFIX</code>.</p>
+<p>Run in: <strong>Terminal</strong>: plan.</p>
+<p>Symptom: the plan shows one ALTER on <code>SP_ADD_CATEGORY</code> that you did not make in Git.
+Diagnosis: the live object differs from the definition (drift), so DCM wants to restore the definition. A hot fix that is not in Git is reverted by the next deploy. This is NAIC risk number 5, "no hand edits in PROD".
+Recovery: decide. If the hot fix is wanted, copy it into <code>procedures/SP_ADD_CATEGORY.sql</code>, plan (it should be empty or adoption-only), deploy. If not, deploy the definition as it is and confirm the procedure returns <code>OK: RATIO</code> again. Then check the grant to <code>SBX_CALC_READER</code> (Step 3.11): a <code>CREATE OR REPLACE</code> may have removed it.</p>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Removing a definition drops the object and its data</td>
+<td>Step 3.7</td>
+<td>Plan review plus an exact-FQN DROP check in CI (Lab 6); <code>UNDROP</code> for standard tables</td>
+<td>VERIFIED (docs) and observed</td>
+</tr>
+<tr>
+<td>A plan shows structure only, not row counts</td>
+<td>Step 3.7</td>
+<td>Evidence queries before and after; backups</td>
+<td>observed</td>
+</tr>
+<tr>
+<td>Deploy does not replay the plan</td>
+<td>Step 3.6</td>
+<td>Fresh full plan immediately before deploy; check the deploy result</td>
+<td>VERIFIED (docs)</td>
+</tr>
+<tr>
+<td>Hybrid tables not supported</td>
+<td>Step 3.16</td>
+<td>Flyway</td>
+<td>VERIFIED (supported list); error text TO-CONFIRM</td>
+</tr>
+<tr>
+<td>No row data, no data fixes</td>
+<td>Step 3.17</td>
+<td>Flyway data migrations</td>
+<td>VERIFIED (only DEFINE, GRANT, ATTACH allowed)</td>
+</tr>
+<tr>
+<td>Rename is drop plus create</td>
+<td>Step 3.19</td>
+<td>Flyway rename plus coordinated definition change (Lab 4)</td>
+<td>TO-CONFIRM TC-G06</td>
+</tr>
+<tr>
+<td>One configuration per project object</td>
+<td>Step 3.14</td>
+<td>One project object per environment</td>
+<td>VERIFIED (docs)</td>
+</tr>
+<tr>
+<td>Users, resource monitors, integrations not manageable</td>
+<td>Step 3.20</td>
+<td>Platform lane</td>
+<td>VERIFIED (supported list); error text TO-CONFIRM</td>
+</tr>
+<tr>
+<td><code>GRANT OWNERSHIP</code> fails with pre-existing grants</td>
+<td>Step 3.21</td>
+<td>Revoke or define the other grants first</td>
+<td>VERIFIED (docs); behaviour TO-CONFIRM TC-G25</td>
+</tr>
+<tr>
+<td>Changed procedure body is a full replace, with no body diff in the plan</td>
+<td>Step 3.11</td>
+<td>Code review of the definition file in Git</td>
+<td>VERIFIED (docs)</td>
+</tr>
+<tr>
+<td>Plan validates creation, not runtime success</td>
+<td>Step 3.12</td>
+<td>Smoke tests after deploy (Lab 5, Lab 6)</td>
+<td>VERIFIED (docs)</td>
+</tr>
+<tr>
+<td>Sequence counter behaviour on redeploy unknown</td>
+<td>Step 3.18</td>
+<td>Check before relying on it</td>
+<td>TO-CONFIRM TC-G05</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>DCM is declarative: you edit the end state, a plan lists CREATE, ALTER and DROP, and an empty plan means in sync.</li>
+<li>Adoption of existing objects needs a definition that matches the live object, an owner role match, and three checks: no DROP, no real change, empty re-plan.</li>
+<li>Deploy recomputes. A plan is for review, not a promise.</li>
+<li>Removing a definition drops the object. The plan does not show the data at risk.</li>
+<li>DCM does not manage hybrid tables, row data, renames, users or monitors. Those need Flyway or the platform lane (Lab 4).</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">DROP DCM PROJECT IF EXISTS SBX_INT.LAB3_SCRATCH.LAB3_DCM;
+DROP SCHEMA IF EXISTS SBX_INT.LAB3_SCRATCH;
+REVOKE USAGE ON PROCEDURE SBX_INT.CALC_SUPPORT.SP_ADD_CATEGORY(VARCHAR, VARCHAR) FROM ROLE SBX_CALC_READER;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>: delete the local saved plans with <code>rm -rf dcm/lab3_scratch/out dcm/calc_engine/out</code>. Keep <code>dcm/lab3_scratch/</code> as a reference if you like; it is never deployed again.</p>
+<p>Keep: the INT project <code>CALC_ENGINE_DCM</code>, all <code>dcm/calc_engine/</code> files. Cost note: DCM plan and deploy are mostly metadata work. Warehouse use here is a few seconds per command.</p>
+<p>Learner action (git, you run it): create a branch and commit the new files <code>dcm/calc_engine/**</code>, <code>dcm/lab3_scratch/**</code> and <code>scripts/plan_summary.py</code> with a message such as <code>feat: adopt lab1 objects into dcm project</code>. The assistant does not run git for you.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<ul>
+<li>Project <code>SBX_INT.CALC_SUPPORT.CALC_ENGINE_DCM</code> exists. Deployments <code>int-adopt</code>, <code>int-proc-edit</code>, <code>int-complete</code> (and <code>int-grants</code>) are in its history. A fresh full re-plan is empty.</li>
+<li><code>dcm/calc_engine/</code> holds the full manifest and definitions that adopt ALL Lab 1 objects, plus: sequences <code>SEQ_FORMULA_ID</code>, <code>SEQ_EXECUTION_ID</code>, <code>SEQ_WORKFLOW_ID</code>, <code>SEQ_AUDIT_EVENT_ID</code>; tables <code>EXECUTIONS</code>, <code>DATA_CHANGE_LOG</code>; view <code>ENV_CONFIG</code>; function <code>FN_APPLY_REDIRECTS</code>; procedures <code>SP_ACTIVATE_DRAFT_CALCULATION</code>, <code>SP_COMPUTE_MINI_RESULT</code>; <code>grants/access.sql</code>.</li>
+<li><code>SBX_INT.LAB3_SCRATCH</code> and <code>LAB3_DCM</code> are dropped.</li>
+<li>New helper: <code>scripts/plan_summary.py</code>.</li>
+</ul>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G02, TC-G03, TC-G04, TC-G05, TC-G06, TC-G16, TC-G17, TC-G20, TC-G25, TC-G26, TC-05-01 (SHOW ENTITIES and SHOW DEPLOYMENTS columns), TC-05-02 (hand-added column drift behaviour), TC-05-03 (UNDROP of a dropped managed table), TC-05-04 (adoption plan shape), TC-05-05 (grant survives procedure edit), TC-05-06 (SQL function body), TC-05-07 (PLAN privilege and temp stage errors), TC-05-08 (ownership error text), TC-05-09 (unsupported DEFINE error texts), TC-05-10 (type string for the unmanage function), TC-05-11 (<code>SHOW GRANTS</code> form for a DCM project). New names introduced here for the contract: helper <code>scripts/plan_summary.py</code>; the scratch manifest target <code>SCRATCH</code>; template variable <code>db</code> in <code>dcm/lab3_scratch</code>; <code>ENV_CONFIG</code> row key <code>RESULT_SCHEMA</code>.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Continue with <a href="06-lab4-both-together-ownership.md">06-lab4-both-together-ownership.md</a>.</p>
+</body></html>

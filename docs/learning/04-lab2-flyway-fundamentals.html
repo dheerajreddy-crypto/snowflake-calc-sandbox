@@ -1,0 +1,473 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Lab 2 (file 04): Flyway fundamentals on Snowflake</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="lab-2-file-04-flyway-fundamentals-on-snowflake">Lab 2 (file 04): Flyway fundamentals on Snowflake</h1>
+<blockquote>
+<p>Lab no: 2 | File no: 04 | Time: 2.5 to 3 hours | Prerequisites: file 03 (for the baseline part), Flyway runner from file 02 | Modes supported: H/S, D (Flyway works on standard tables in every mode) | Leaves behind: <code>SBX_INT.LAB2_SCRATCH</code> with Flyway history and mini objects (may be cleaned), <code>SBX_INT.LAB2_BASELINE</code> baselined at version 1 then dropped, the main <code>flyway/flyway.toml</code> written but not yet migrated.</p>
+</blockquote>
+<h2 id="1-goal">1. Goal</h2>
+<p>Learn Flyway from nothing: configuration, versioned (<code>V</code>) and repeatable (<code>R__</code>) migrations, the history table, checksums, the commands <code>info</code>, <code>validate</code>, <code>migrate</code>, <code>baseline</code>, <code>repair</code>, <code>clean</code>, out-of-order, placeholders, a migration that fails half way (Snowflake DDL auto-commit), fix-forward, and baselining an existing database (your Lab 1 objects). Then expose Flyway's limits with exercises.</p>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world.</strong> Flyway is the planned tool for the Calc Admin lifecycle schema. The two hybrid tables <code>CALC_WORKFLOW_STATUS</code> and <code>CALC_AUDIT_EVENT</code> exist in INT, created by hand on 2026-11-03, with no scripts. The design: scripts V001 to V006 (sequence, tables, indexes, grants); INT is <strong>baselined</strong> at V006 after verifying the live shape equals the scripts; QA and PROD run the scripts for real. Flyway never runs at app startup in the target (<code>calc-admin-with-flyway.html</code>). EDP already runs Flyway for <code>NAIC_&lt;tier&gt;_FINANCIAL_EDL.FIN_CALCULATION</code> with history table <code>flyway_bus_history_table</code>. The calc-engine branch even hand-built a mini Flyway: <code>data_changes/V&lt;timestamp&gt;__*.sql</code> with a ledger <code>DATA_CHANGE_LOG</code> and a SHA-256 checksum, which the architecture moves into the Flyway lane. This lab teaches what that mini Flyway was copying.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Terminal</strong> (repository folder, venv active) and <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-bash">snow connection test -c sbx_owner
+docker run --rm redgate/flyway:13.12.2 -v     # TO-CONFIRM TC-02-04
+</code></pre>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+SHOW TABLES IN SCHEMA SBX_INT.CALC_SUPPORT;       -- expect CALCULATIONS, FORMULAS, FORMULA_CATEGORIES from Lab 1
+SHOW SCHEMAS LIKE 'LAB2%' IN DATABASE SBX_INT;     -- expect LAB2_SCRATCH
+</code></pre>
+<p>You should see: Flyway prints version 13.12.2; the three Lab 1 tables exist; <code>LAB2_SCRATCH</code> exists. If the Lab 1 tables are missing you can still do everything except Step 5.11 (baseline); do Lab 1 first.</p>
+<p>The helper <code>fw</code> is defined in file 02. Repeat it in the shell you use now. Set the connection URL once per shell session (the account identifier stays in your shell, never in a committed file) and the passphrase through a prompt that does not echo:</p>
+<pre><code class="language-bash">export FLYWAY_URL=&quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&amp;authenticator=snowflake_jwt&amp;private_key_file=/keys/sbx_svc_cicd_rsa_key.p8&quot;
+read -s PRIVATE_KEY_PASSPHRASE &amp;&amp; export PRIVATE_KEY_PASSPHRASE
+</code></pre>
+<p>(<code>/keys/...</code> is the path inside the Docker container; <code>fw</code> mounts your key folder read-only.)</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<ul>
+<li><strong>Migration.</strong> A SQL file that changes the database one step, applied once and in order. Flyway keeps the list of applied steps in a table.</li>
+<li><strong>Versioned migration.</strong> File name <code>V&lt;version&gt;__&lt;description&gt;.sql</code> (two underscores). Applied exactly once, in version order, then its <strong>checksum</strong> (a fingerprint of the file text) is stored. Versions can use dots or underscores: <code>V3_1</code> is version 3.1.</li>
+<li><strong>Repeatable migration.</strong> File name <code>R__&lt;description&gt;.sql</code>. Re-applied whenever its checksum changes, after all pending versioned migrations. Good for views and procedures, whose definition you want to keep as one current file.</li>
+<li><strong>History table.</strong> Flyway's own table, <code>flyway_schema_history</code> by default, created by <code>migrate</code> in the default schema. One row per applied migration with version, description, checksum, who, when and success. Snowflake stores the name in upper case.</li>
+<li><strong>Checksum validation.</strong> Before migrating, Flyway compares the checksum of each applied file with the file on disk. A mismatch is an error. That is how it protects "applied versions are immutable".</li>
+<li><strong>Fix-forward.</strong> To change something that was already applied, you add a new migration. You do not edit the old file.</li>
+<li><strong>Baseline.</strong> Tells Flyway "this database already has everything up to version N". Used to adopt an existing database.</li>
+<li><strong>Placeholders.</strong> <code>${name}</code> tokens in SQL files, replaced by values from configuration.</li>
+<li><strong>Snowflake auto-commits DDL.</strong> Each <code>CREATE</code>/<code>ALTER</code> commits on its own, so a file that fails halfway leaves its earlier statements applied.</li>
+</ul>
+<blockquote>
+<p><strong>VERIFIED:</strong> Flyway Community includes migrate, info, validate, baseline, repair, clean, versioned and repeatable migrations, and placeholders. Undo migrations and dry run need Teams; drift detection needs Enterprise (https://documentation.red-gate.com/fd/feature-summary-165740620.html and https://documentation.red-gate.com/flyway/reference/commands, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> since Flyway 10 the default configuration format is TOML (<code>flyway.toml</code>); the old <code>flyway.conf</code> is read only if no TOML file is found, and the two formats cannot be mixed (https://www.red-gate.com/hub/product-learning/flyway/using-toml-configuration-files-with-flyway, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> the Snowflake JDBC URL needs <code>db</code> and <code>warehouse</code>; Flyway commits no DDL rollback on Snowflake, so a half-failed migration leaves earlier statements in place and you clean them up by hand (https://documentation.red-gate.com/flyway/reference/database-driver-reference/snowflake, read 2026-11-16).</p>
+</blockquote>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-51-create-the-scratch-project">Step 5.1 Create the scratch project</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/flyway.toml</code>:</p>
+<pre><code class="language-toml">[environments.target]
+url = &quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&quot;
+user = &quot;SBX_SVC_CICD&quot;
+# The private key path and your real account come from the FLYWAY_URL variable you exported above.
+# Never write a key, passphrase or your real account identifier into this file.
+
+[flyway]
+environment = &quot;target&quot;
+locations = [&quot;filesystem:migrations&quot;]
+schemas = [&quot;LAB2_SCRATCH&quot;]
+defaultSchema = &quot;LAB2_SCRATCH&quot;
+createSchemas = false
+# table: left at its default (flyway_schema_history) on purpose, to show the default
+# cleanDisabled is NOT set here: its default is true
+
+[flyway.placeholders]
+calc_db = &quot;SBX_INT&quot;
+</code></pre>
+<p>For reference only, the same settings in the older <code>flyway.conf</code> format (do not create this file; the two formats cannot be mixed):</p>
+<pre><code class="language-text">flyway.url=jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE
+flyway.user=SBX_SVC_CICD
+flyway.locations=filesystem:migrations
+flyway.schemas=LAB2_SCRATCH
+flyway.defaultSchema=LAB2_SCRATCH
+flyway.placeholders.calc_db=SBX_INT
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-04-01]:</strong> that the environment variable <code>FLYWAY_URL</code> overrides <code>[environments.target] url</code> in a TOML file. The docs say environment variables override files, and the pack's contract relies on <code>FLYWAY_URL</code>. How to check: run Step 5.2; if Flyway reports it cannot connect to the placeholder account, pass the URL as a command-line parameter instead: <code>fw flyway/lab2_scratch -url="$FLYWAY_URL" info</code>. Record the working form in file 13.</p>
+<p><strong>TO-CONFIRM [TC-G10]:</strong> per-environment placeholders in <code>flyway.toml</code>. An article from 2025 said they were not possible. The pack avoids the question: it uses <code>[flyway.placeholders]</code>, environment variables (<code>FLYWAY_PLACEHOLDERS_CALC_DB</code>) or <code>-placeholders.calc_db=...</code>. How to check: not needed in this lab.</p>
+</blockquote>
+<p>Create the first migration <code>flyway/lab2_scratch/migrations/V1__create_mini_calculations.sql</code>:</p>
+<pre><code class="language-sql">CREATE TABLE ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI (
+  CALC_ID     NUMBER(38,0) NOT NULL,
+  CALC_NAME   VARCHAR(200) NOT NULL,
+  CALC_STATUS VARCHAR(10)  DEFAULT 'DRAFT',
+  PRIMARY KEY (CALC_ID)
+);
+
+INSERT INTO ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI (CALC_ID, CALC_NAME)
+VALUES (1, 'MINI_ONE'), (2, 'MINI_TWO');
+</code></pre>
+<p>You should see: two files. Nothing has run.</p>
+<h3 id="step-52-info-before-anything-is-applied">Step 5.2 <code>info</code> before anything is applied</h3>
+<p>Run in: <strong>Terminal</strong>, repository root.</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch info
+</code></pre>
+<p>You should see: a connection to <code>SBX_INT</code> as <code>SBX_SVC_CICD</code>, and a table listing <code>V1 create mini calculations</code> with state <strong>Pending</strong>. No history table exists yet; <code>info</code> does not create one.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-04-02]:</strong> the exact columns and wording of <code>flyway info</code> on Snowflake. How to check: the output. Record a copy in file 13.</p>
+</blockquote>
+<p>If you see a key-decryption error, see TC-G21 in file 02 (JVM flag). If you see an authentication error with code 390144, see file 12.</p>
+<h3 id="step-53-first-migrate-and-reading-the-history-table">Step 5.3 First <code>migrate</code> and reading the history table</h3>
+<p>Run in: <strong>Terminal</strong>.</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+fw flyway/lab2_scratch info
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>.</p>
+<pre><code class="language-sql">SHOW TABLES IN SCHEMA SBX_INT.LAB2_SCRATCH;
+SELECT * FROM SBX_INT.LAB2_SCRATCH.CALCULATIONS_MINI;
+SELECT * FROM SBX_INT.LAB2_SCRATCH.&quot;flyway_schema_history&quot;;   -- or FLYWAY_SCHEMA_HISTORY; see TC-04-03
+</code></pre>
+<p>You should see: <code>V1</code> state <strong>Success</strong> in <code>info</code>; tables <code>CALCULATIONS_MINI</code> and the history table in <code>LAB2_SCRATCH</code>; two data rows; one history row (plus possibly a schema-creation row) with <code>version</code> 1, a numeric <code>checksum</code>, <code>installed_by</code> <code>SBX_SVC_CICD</code>, and <code>success</code> true.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-04-03]:</strong> whether Snowflake shows the history table as <code>FLYWAY_SCHEMA_HISTORY</code> or <code>flyway_schema_history</code> (quoted lower case). How to check: the <code>SHOW TABLES</code> output. Record in file 13. The pack's contract assumes upper case.</p>
+</blockquote>
+<p>Write down the history <code>checksum</code> for V1. You need it in Step 5.6.</p>
+<h3 id="step-54-a-second-versioned-migration-and-a-placeholder">Step 5.4 A second versioned migration and a placeholder</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/migrations/V2__add_notes_column.sql</code>:</p>
+<pre><code class="language-sql">ALTER TABLE ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI ADD COLUMN NOTES VARCHAR(500);
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<p>You should see: only <code>V2</code> applied (V1 is skipped because it is already in the history), and <code>NOTES</code> added to the table (<code>SHOW COLUMNS IN TABLE SBX_INT.LAB2_SCRATCH.CALCULATIONS_MINI;</code>). The text <code>${calc_db}</code> in your file was replaced by <code>SBX_INT</code> from the configuration. Placeholders can come from the config file, from <code>-placeholders.&lt;name&gt;=...</code> on the command line or from <code>FLYWAY_PLACEHOLDERS_&lt;NAME&gt;</code> in the environment (later sources win).</p>
+<h3 id="step-55-a-repeatable-migration">Step 5.5 A repeatable migration</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/migrations/R__calc_summary_view.sql</code>:</p>
+<pre><code class="language-sql">CREATE OR REPLACE VIEW ${calc_db}.LAB2_SCRATCH.CALC_SUMMARY AS
+SELECT CALC_STATUS, COUNT(*) AS CALC_COUNT
+  FROM ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI
+ GROUP BY CALC_STATUS;
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate     # applies the R__ file
+fw flyway/lab2_scratch migrate     # nothing to do
+</code></pre>
+<p>Now edit the view file (add <code>, MAX(CALC_ID) AS LAST_CALC_ID</code> to the select list) and run <code>migrate</code> again.</p>
+<p>You should see: the first run applies the repeatable (<code>info</code> shows it as <code>Repeatable</code>); the second run says the schema is up to date; after your edit the repeatable is applied again because its checksum changed. Repeatables have no version, so they are re-applied, never skipped as "older".</p>
+<h3 id="step-56-checksums-edit-an-applied-migration">Step 5.6 Checksums: edit an applied migration</h3>
+<p>Run in: <strong>Terminal</strong>. Open <code>V1__create_mini_calculations.sql</code> and add a comment line at the top (<code>-- edited after the fact</code>). Then:</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch validate
+fw flyway/lab2_scratch migrate
+</code></pre>
+<p>You should see: <code>validate</code> fails and says a checksum mismatch was detected for migration version 1 (applied checksum versus resolved checksum), and <code>migrate</code> refuses to run because <code>validateOnMigrate</code> is on by default. Even a comment changes the checksum.</p>
+<p>Two ways out. Do <strong>A</strong> now:</p>
+<ul>
+<li><strong>A. Revert the file</strong> to its exact original text. <code>validate</code> passes again. This is the intended path.</li>
+<li><strong>B. <code>repair</code></strong> realigns the stored checksum to the edited file: <code>fw flyway/lab2_scratch repair</code>. It works, and that is the danger. In a team, <code>repair</code> makes the history say whatever the files say now, so the protection disappears. NAIC's rules: no automatic repair, manual repair only with approval.</li>
+</ul>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>validate</code> compares applied migrations with available ones and reports checksum mismatches and missing migrations; <code>repair</code> removes failed entries, realigns checksums, descriptions and types with the available files, and marks missing migrations as deleted; it must be given the same locations as <code>migrate</code> (https://documentation.red-gate.com/flyway/reference/commands/repair, read 2026-11-16).</p>
+</blockquote>
+<h3 id="step-57-a-migration-that-fails-half-way">Step 5.7 A migration that fails half way</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/migrations/V3__bad_migration_half_fails.sql</code>:</p>
+<pre><code class="language-sql">CREATE TABLE ${calc_db}.LAB2_SCRATCH.LAB2_PARTIAL (ID NUMBER);
+ALTER TABLE ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI ADD COLUMN NOTES VARCHAR(500);   -- fails: NOTES already exists from V2
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+fw flyway/lab2_scratch info
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-sql">SHOW TABLES LIKE 'LAB2_PARTIAL' IN SCHEMA SBX_INT.LAB2_SCRATCH;
+</code></pre>
+<p>You should see: <code>migrate</code> fails on the second statement with an error that the column already exists. <code>info</code> shows <code>V3</code> as <strong>Failed</strong>. <strong>And the table <code>LAB2_PARTIAL</code> exists</strong>: Snowflake committed the first statement before the second one failed. This is the proof that Flyway cannot roll back a half-failed Snowflake migration.</p>
+<p>Run <code>migrate</code> again. You should see: it refuses because of the failed entry in the history (the wording is not recorded here; note it).</p>
+<p>Recovery (do these in order):</p>
+<pre><code class="language-sql">DROP TABLE IF EXISTS SBX_INT.LAB2_SCRATCH.LAB2_PARTIAL;
+</code></pre>
+<pre><code class="language-bash">rm flyway/lab2_scratch/migrations/V3__bad_migration_half_fails.sql
+fw flyway/lab2_scratch repair
+fw flyway/lab2_scratch info
+</code></pre>
+<p>You should see: <code>repair</code> removes the failed row; <code>info</code> shows V1, V2 and the repeatable as applied and no V3. Deleting the bad file is allowed here because it <strong>never succeeded</strong>. The rule "never edit an applied file" applies to applied files only.</p>
+<p>Now make the change you actually wanted, as a new migration (<strong>fix-forward</strong>). Suppose 500 characters turned out too short for notes. Create <code>flyway/lab2_scratch/migrations/V3_1__fix_forward_calc_notes.sql</code>:</p>
+<pre><code class="language-sql">ALTER TABLE ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI ALTER COLUMN NOTES SET DATA TYPE VARCHAR(2000);
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<p>You should see: version 3.1 applied. You did not touch V2; the history shows the real sequence of events.</p>
+<blockquote>
+<p><strong>Lesson in one line:</strong> keep each migration to one DDL statement where you can. A one-statement file either applies or does not, and the half-applied state cannot happen.</p>
+<p><strong>VERIFIED:</strong> the history entry of a failed migration is recorded as failed; Flyway's docs say to clean up partial changes by hand and use repair on databases without DDL transactions; undo migrations "do not help with failed versioned migrations" there (https://documentation.red-gate.com/flyway/flyway-concepts/migrations/undo-migrations, read 2026-11-16).</p>
+</blockquote>
+<h3 id="step-58-out-of-order-migrations">Step 5.8 Out-of-order migrations</h3>
+<p>Run in: <strong>Terminal</strong>. Create a helper that jumps ahead, <code>flyway/lab2_scratch/migrations/V5__out_of_order_helper.sql</code>:</p>
+<pre><code class="language-sql">CREATE TABLE ${calc_db}.LAB2_SCRATCH.LAB2_HELPER (ID NUMBER);
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<p>Now create the "late" file with a lower version, <code>flyway/lab2_scratch/migrations/V4__out_of_order_demo.sql</code> (this simulates a colleague's branch merged after yours):</p>
+<pre><code class="language-sql">CREATE TABLE ${calc_db}.LAB2_SCRATCH.LAB2_LATE (ID NUMBER);
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch info
+fw flyway/lab2_scratch migrate
+fw flyway/lab2_scratch validate
+</code></pre>
+<p>You should see: <code>info</code> shows <code>V4</code> as <strong>Ignored</strong> (its version is lower than the highest applied, V5); <code>migrate</code> does not apply it; <code>validate</code> flags it (the exact message is not recorded; note it). With the default <code>outOfOrder=false</code> this is a deliberate stop: the order of application must equal the order of versions.</p>
+<p>Now allow it, once:</p>
+<pre><code class="language-bash">export FLYWAY_OUT_OF_ORDER=true
+fw flyway/lab2_scratch migrate
+unset FLYWAY_OUT_OF_ORDER
+fw flyway/lab2_scratch info
+</code></pre>
+<p>You should see: V4 applied, shown as <strong>Out of Order</strong> in <code>info</code>. In NAIC's target config <code>outOfOrder=false</code> is fixed. fpr-admin (Postgres) sets <code>out-of-order=true</code>, which is a convenience that hides ordering mistakes.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>outOfOrder</code> defaults to false; with versions 1 and 3 applied and 2 found later, <code>true</code> applies version 2 and <code>false</code> ignores it; the environment variable is <code>FLYWAY_OUT_OF_ORDER</code> (https://documentation.red-gate.com/flyway/reference/configuration/flyway-namespace/flyway-out-of-order-setting, read 2026-11-16).</p>
+</blockquote>
+<h3 id="step-59-a-procedure-body-in-a-migration">Step 5.9 A procedure body in a migration</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/migrations/R__sp_mini_count.sql</code>:</p>
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE ${calc_db}.LAB2_SCRATCH.SP_MINI_COUNT()
+RETURNS NUMBER
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_n NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO :v_n FROM ${calc_db}.LAB2_SCRATCH.CALCULATIONS_MINI;
+    RETURN v_n;
+END;
+$$;
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<pre><code class="language-sql">CALL SBX_INT.LAB2_SCRATCH.SP_MINI_COUNT();
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G08]:</strong> whether Flyway parses a <code>$$ ... $$</code> body that contains semicolons and a Snowflake Scripting block correctly. This matters a great deal for NAIC, where almost everything is a procedure. How to check: this step. Record the result and any error text in file 13. If Flyway splits the body at the inner semicolons and fails, try the same content with the body on fewer lines, or note that procedure files may need a different handling approach.</p>
+</blockquote>
+<p>You should see (if it parses): the repeatable applied and the call returns <code>2</code> (two seed rows). Whatever you see, write it down: this decides how comfortable Flyway is for procedure-heavy code.</p>
+<h3 id="step-510-clean-why-it-is-disabled-and-rebuilding-from-nothing">Step 5.10 <code>clean</code>: why it is disabled, and rebuilding from nothing</h3>
+<p>Run in: <strong>Terminal</strong>.</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch clean
+</code></pre>
+<p>You should see: Flyway refuses because clean is disabled (the default). Only in this scratch sandbox, enable it for one command:</p>
+<pre><code class="language-bash">export FLYWAY_CLEAN_DISABLED=false
+fw flyway/lab2_scratch clean
+unset FLYWAY_CLEAN_DISABLED
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong>.</p>
+<pre><code class="language-sql">SHOW TABLES IN SCHEMA SBX_INT.LAB2_SCRATCH;
+SHOW VIEWS IN SCHEMA SBX_INT.LAB2_SCRATCH;
+</code></pre>
+<p>You should see: no tables and no views. <code>clean</code> dropped <strong>every object in the configured schemas</strong>, including the history table. Now rebuild everything from the files:</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<p>You should see: all versions applied in order, now V4 before V5 because the history is empty. A fresh build from files gives the same end state (apart from the order difference), which is the real value of migrations: the database can be rebuilt in a clone.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>clean</code> drops all objects in the configured schemas and schemas Flyway created; its documentation says never to use it against production; <code>cleanDisabled</code> defaults to true (https://documentation.red-gate.com/flyway/reference/commands/clean and https://documentation.red-gate.com/flyway/reference/configuration/flyway-namespace/flyway-clean-disabled-setting, read 2026-11-16).</p>
+<p><strong>Safety rule.</strong> Keep <code>schemas</code> in the configuration to the scratch schema only. If you ever configured <code>CALC_SUPPORT</code> with clean enabled, <code>clean</code> would drop every engine object. In NAIC <code>cleanDisabled=true</code> is fixed in shared environments.</p>
+</blockquote>
+<h3 id="step-511-baseline-an-existing-database-your-lab-1-objects">Step 5.11 Baseline an existing database (your Lab 1 objects)</h3>
+<p><strong>Why.</strong> <code>SBX_INT.CALC_SUPPORT</code> already has objects with no Flyway history, like INT's hand-made hybrid tables. You cannot run <code>V1__create...</code> on it because the table exists. You baseline instead. You practise on a zero-copy clone so the real Lab 1 objects stay untouched.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+CREATE SCHEMA SBX_INT.LAB2_BASELINE CLONE SBX_INT.CALC_SUPPORT;
+SHOW TABLES IN SCHEMA SBX_INT.LAB2_BASELINE;
+</code></pre>
+<p>You should see: a schema with the same tables and the seed rows. (A clone of a schema without hybrid tables works; see Lab 5 for what changes with hybrid tables.)</p>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/lab2_scratch/baseline_migrations/V1__lab1_objects.sql</code> (the script that, in an ideal world, created the objects; it must not run now):</p>
+<pre><code class="language-sql">-- Represents everything that Lab 1 created by hand. Flyway must NEVER execute this on the baselined schema.
+CREATE TABLE ${calc_db}.LAB2_BASELINE.CALCULATIONS (CALC_ID NUMBER(38,0) NOT NULL);
+</code></pre>
+<p>And <code>flyway/lab2_scratch/baseline_migrations/V2__add_approved_by.sql</code>:</p>
+<pre><code class="language-sql">ALTER TABLE ${calc_db}.LAB2_BASELINE.CALCULATIONS ADD COLUMN APPROVED_BY VARCHAR(255);
+</code></pre>
+<p>Point Flyway at the clone and the new folder for these commands only:</p>
+<pre><code class="language-bash">BASE_ARGS='-schemas=LAB2_BASELINE -defaultSchema=LAB2_BASELINE -locations=filesystem:baseline_migrations'
+fw flyway/lab2_scratch $BASE_ARGS migrate
+</code></pre>
+<p>You should see: an error. Either Flyway refuses because the schema is not empty and has no history table, or (if it tried) V1 fails because the table already exists.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-04-04]:</strong> the exact wording of that refusal. How to check: the output. Record in file 13. The pack expects a message that suggests <code>baseline</code> or <code>baselineOnMigrate</code>.</p>
+</blockquote>
+<p>Now baseline, and then migrate:</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch $BASE_ARGS baseline -baselineVersion=1 -baselineDescription=&quot;Lab 1 objects&quot;
+fw flyway/lab2_scratch $BASE_ARGS info
+fw flyway/lab2_scratch $BASE_ARGS migrate
+fw flyway/lab2_scratch $BASE_ARGS info
+</code></pre>
+<p>You should see: after <code>baseline</code>, <code>V1</code> shown as <strong>Baseline</strong> and <code>V2</code> as <strong>Pending</strong>; after <code>migrate</code>, <code>V2</code> applied and <code>V1</code> never executed (check that <code>CALCULATIONS</code> in the clone still has its original rows and gained <code>APPROVED_BY</code>). A history table <code>FLYWAY_SCHEMA_HISTORY</code> now exists in <code>SBX_INT.LAB2_BASELINE</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G09]:</strong> the default value of <code>baselineVersion</code>. The pack passes <code>-baselineVersion=1</code> explicitly, so the lab works. How to check: the Flyway docs page for the setting, or run <code>baseline</code> without the flag in a throwaway schema. Record in file 13.</p>
+</blockquote>
+<p>What can go wrong with a baseline: you baseline at a version while the live objects do <strong>not</strong> match the scripts up to that version. Flyway cannot check. That is why NAIC's design says verify the live shape equals the scripts first, and requires approval for a baseline (<code>baselineOnMigrate=false</code>). Setting <code>baselineOnMigrate=true</code> would baseline silently on the first <code>migrate</code> against any non-empty schema, which is convenient and dangerous.</p>
+<h3 id="step-512-write-the-main-project-configuration-do-not-migrate-yet">Step 5.12 Write the main project configuration (do not migrate yet)</h3>
+<p>Run in: <strong>Terminal</strong>. Create <code>flyway/flyway.toml</code>. This is the file Labs 4, 6, 7 and 8 use. It contains <strong>no secrets</strong>.</p>
+<pre><code class="language-toml">[environments.target]
+url = &quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&quot;
+user = &quot;SBX_SVC_CICD&quot;
+# private key and url overrides come from environment variables / CLI parameters, never from this file
+
+[flyway]
+environment = &quot;target&quot;
+locations = [&quot;filesystem:migrations/common&quot;, &quot;filesystem:migrations/standard&quot;]   # Mode S. Mode H: migrations/hybrid
+defaultSchema = &quot;CALC_SUPPORT&quot;
+schemas = [&quot;CALC_SUPPORT&quot;]
+table = &quot;FLYWAY_HISTORY_CALC_SUPPORT&quot;
+validateOnMigrate = true
+outOfOrder = false
+baselineOnMigrate = false
+cleanDisabled = true
+createSchemas = false
+
+[flyway.placeholders]
+calc_db = &quot;SBX_INT&quot;
+calc_schema = &quot;CALC_SUPPORT&quot;
+app_role = &quot;SBX_FN_CALC_ENGINE_NP&quot;
+reader_role = &quot;SBX_CALC_READER&quot;
+</code></pre>
+<p>Also create <code>flyway/.env.flyway.example</code> (committed; the real <code>.env.flyway</code> is gitignored):</p>
+<pre><code class="language-text">FLYWAY_URL=jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&amp;authenticator=snowflake_jwt&amp;private_key_file=/keys/sbx_svc_cicd_rsa_key.p8
+FLYWAY_LOCATIONS=filesystem:migrations/common,filesystem:migrations/standard
+FLYWAY_PLACEHOLDERS_CALC_DB=SBX_INT
+FLYWAY_PLACEHOLDERS_CALC_SCHEMA=CALC_SUPPORT
+</code></pre>
+<p>Compare each setting with the NAIC contract in file 01: <code>validateOnMigrate=true</code>, <code>outOfOrder=false</code>, <code>baselineOnMigrate=false</code>, <code>cleanDisabled=true</code>, a dedicated history table per boundary and environment. Do not run <code>migrate</code> with this file yet: Lab 4 does that after DCM owns the tables Flyway migrations depend on.</p>
+<h3 id="step-513-limitations-exercises">Step 5.13 Limitations exercises</h3>
+<p><strong>L1. Flyway does not detect drift.</strong> Run in <strong>Snowsight worksheet</strong>, then <strong>Terminal</strong>:</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.LAB2_SCRATCH.CALCULATIONS_MINI ADD COLUMN SNEAKY VARCHAR(10);
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch validate
+fw flyway/lab2_scratch info
+</code></pre>
+<p>You should see: both succeed with no complaint. The history says everything matches, but the table has a column no migration created. Run <code>SHOW COLUMNS IN TABLE SBX_INT.LAB2_SCRATCH.CALCULATIONS_MINI;</code> to see it. Flyway compares <strong>files with its history</strong>, not files with the database. Drift detection exists only in the Enterprise edition (public preview for Snowflake).</p>
+<p><strong>L2. Repeatables miss hand edits.</strong> Run in <strong>Snowsight worksheet</strong>:</p>
+<pre><code class="language-sql">CREATE OR REPLACE VIEW SBX_INT.LAB2_SCRATCH.CALC_SUMMARY AS SELECT 'hand edit' AS WHO;
+</code></pre>
+<pre><code class="language-bash">fw flyway/lab2_scratch migrate
+</code></pre>
+<p>You should see: "up to date". The hand edit survives because the repeatable file did not change, so Flyway never re-applies it. The live view is wrong until someone edits the file.</p>
+<p><strong>L3. No preview.</strong> Add a new <code>V6__x.sql</code> with <code>ALTER TABLE ... ADD COLUMN</code>. Run <code>fw flyway/lab2_scratch info</code>. You see <strong>Pending</strong> and a file name, not what the change will do to the live database. The dry-run feature is in Teams. Delete the file again.</p>
+<p><strong>L4. Renames are manual.</strong> Flyway has no concept of "rename". You write <code>ALTER TABLE &lt;old&gt; RENAME TO &lt;new&gt;</code> as a plain migration; nothing links it to any definition. You use this in Lab 4 where a declarative tool would otherwise drop and recreate.</p>
+<p><strong>L5. No rollback in Community.</strong> Run:</p>
+<pre><code class="language-bash">fw flyway/lab2_scratch undo
+</code></pre>
+<p>You should see: an error that the command is not available in this edition (the exact text is not recorded; note it). Undo needs Teams, and even there it does not repair a half-failed Snowflake migration. Recovery in Community is fix-forward, restoring from a clone, or Time Travel for data.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G11]:</strong> the flag name for JSON output (<code>-outputType=json</code>). It is not needed in this lab but Lab 6 uses it in CI. How to check: run <code>fw flyway/lab2_scratch -outputType=json info</code>. Record in file 13.</p>
+</blockquote>
+<p><strong>L6. Procedure-heavy code.</strong> Count what you did in Step 5.9: a procedure fits an <code>R__</code> file, but there is no check that the live procedure still matches the file. A codebase of 31 procedures with 6,700 lines is a lot of repeatable files with no plan output. This is where DCM (Lab 3) is stronger.</p>
+<p>Remove the extra column when you are done with L1:</p>
+<pre><code class="language-sql">ALTER TABLE SBX_INT.LAB2_SCRATCH.CALCULATIONS_MINI DROP COLUMN SNEAKY;
+</code></pre>
+<h2 id="6-checkpoint-questions">6. Checkpoint questions</h2>
+<ol>
+<li>Why does a comment-only edit to an applied file make <code>validate</code> fail?</li>
+<li>What is the difference between a versioned and a repeatable migration? When would you choose each?</li>
+<li>After a migration fails half way on Snowflake, what is in the database, what is in the history table, and what do you do?</li>
+<li>Why is <code>repair</code> risky as a routine tool?</li>
+<li><code>clean</code> is disabled by default. What did it do in Step 5.10, and why must it stay disabled in shared environments?</li>
+<li>What does <code>baseline</code> do, and what can Flyway <strong>not</strong> check about it?</li>
+<li>Name two things Flyway Community cannot tell you about the live database.</li>
+<li>Why does NAIC run Flyway from a pipeline job and not when the application starts?</li>
+</ol>
+<p>Answers:</p>
+<ol>
+<li>The checksum is a fingerprint of the whole file text. Any change, including whitespace or comments, changes it.</li>
+<li>Versioned: applied once, in order (tables, data fixes, renames). Repeatable: re-applied when changed, after versioned ones (views, procedures).</li>
+<li>The statements before the failure remain (DDL commits at once); the history has a failed row; drop the partial objects by hand, run <code>repair</code>, then apply a corrected or new migration.</li>
+<li>It realigns recorded checksums to the current files, which erases the protection against edited applied migrations.</li>
+<li>It dropped every object in the schema, including the history. A shared environment's data would be gone with no undo.</li>
+<li>It records that the database is at version N. It cannot check that the live objects really match the scripts up to N.</li>
+<li>Any two of: drift (live differs from history), what a change will do before it runs (no preview), whether a repeatable's live object was hand-edited.</li>
+<li>The application credential would need DDL rights; parallel instances race; a failed migration blocks every pod; PROD changes need approval in a protected pipeline; Snowflake DDL cannot be rolled back.</li>
+</ol>
+<h2 id="7-break-it">7. Break it</h2>
+<p><strong>Exercise: delete an applied migration file.</strong> Run in <strong>Terminal</strong>:</p>
+<pre><code class="language-bash">mv flyway/lab2_scratch/migrations/V2__add_notes_column.sql /tmp/V2.sql.bak
+fw flyway/lab2_scratch validate
+</code></pre>
+<ul>
+<li><strong>Symptom:</strong> <code>validate</code> fails and reports an applied migration (version 2) that is not found among the local files.</li>
+<li><strong>Diagnosis:</strong> the history lists V2 as applied, but no file with that version exists. In a team this happens when someone deletes a file or works on an older branch.</li>
+<li><strong>Recovery:</strong> put the file back: <code>mv /tmp/V2.sql.bak flyway/lab2_scratch/migrations/V2__add_notes_column.sql</code>. Run <code>validate</code> again; it passes.</li>
+<li><strong>Lesson:</strong> history and files must stay in step. Restoring the file is correct. <code>repair</code> would mark V2 as deleted, which would hide the problem.</li>
+</ul>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No drift detection</td>
+<td>L1 (Step 5.13)</td>
+<td>DCM plan (Lab 3), drift detective queries</td>
+<td>VERIFIED by docs (feature summary); behaviour to be seen by you</td>
+</tr>
+<tr>
+<td>No preview or plan</td>
+<td>L3</td>
+<td>DCM plan (Lab 3); Flyway dry run is Teams only</td>
+<td>VERIFIED by docs</td>
+</tr>
+<tr>
+<td>Repeatables miss hand edits</td>
+<td>L2</td>
+<td>DCM plan sees live versus defined</td>
+<td>To be observed by you</td>
+</tr>
+<tr>
+<td>Half-failed migration leaves partial changes</td>
+<td>Step 5.7</td>
+<td>One statement per file; clone or Time Travel recovery</td>
+<td>VERIFIED by docs; behaviour to be seen by you</td>
+</tr>
+<tr>
+<td>Renames are hand-written</td>
+<td>L4</td>
+<td>Coordinated protocol (Lab 4)</td>
+<td>VERIFIED by reasoning</td>
+</tr>
+<tr>
+<td>No rollback in Community</td>
+<td>L5</td>
+<td>Fix-forward, clones, Time Travel</td>
+<td>VERIFIED by docs (undo is Teams)</td>
+</tr>
+<tr>
+<td>Procedure-heavy codebases</td>
+<td>Step 5.9, L6</td>
+<td>DCM for routines (Lab 3)</td>
+<td>TO-CONFIRM TC-G08 for parsing</td>
+</tr>
+<tr>
+<td><code>repair</code> and <code>outOfOrder</code> can hide mistakes</td>
+<td>Steps 5.6, 5.8</td>
+<td>Config contract: no auto repair, <code>outOfOrder=false</code></td>
+<td>VERIFIED by running</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>Flyway is an ordered list of files plus a history table with checksums; it knows files and history, not the live database.</li>
+<li>Applied files are immutable; mistakes are fixed forward, and <code>repair</code> and <code>clean</code> are dangerous tools.</li>
+<li>Snowflake DDL commits at once, so a failed file can leave partial changes; one statement per file avoids it.</li>
+<li>Baselining adopts an existing database but trusts you that the shapes match.</li>
+<li>Flyway cannot drift-check, preview, or roll back in Community edition.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">DROP SCHEMA IF EXISTS SBX_INT.LAB2_BASELINE;
+-- Optional: keep LAB2_SCRATCH for rereading, or empty it:
+-- DROP TABLE / VIEW / PROCEDURE objects in SBX_INT.LAB2_SCRATCH
+ALTER WAREHOUSE SBX_CALC_WH SUSPEND;
+</code></pre>
+<p>Keep: <code>flyway/flyway.toml</code>, <code>flyway/.env.flyway.example</code>, the <code>flyway/lab2_scratch</code> project files (useful for reference), and the Lab 1 objects in <code>CALC_SUPPORT</code>. Unset <code>FLYWAY_*</code> variables in your shell.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p><code>SBX_INT.LAB2_SCRATCH</code> has Flyway history and mini objects (may be cleaned). <code>SBX_INT.LAB2_BASELINE</code> was baselined at version 1, then dropped in cleanup. The main <code>flyway/flyway.toml</code> is written but <strong>not yet migrated</strong>.</p>
+<p><strong>NEW NAMES in this lab (not in the contract):</strong> <code>flyway/lab2_scratch/migrations/V5__out_of_order_helper.sql</code> (jumps ahead for the out-of-order demo), <code>flyway/lab2_scratch/migrations/R__sp_mini_count.sql</code> (procedure parsing test), <code>flyway/lab2_scratch/baseline_migrations/</code> with <code>V1__lab1_objects.sql</code> and <code>V2__add_approved_by.sql</code> (baseline exercise), tables <code>LAB2_PARTIAL</code>, <code>LAB2_HELPER</code>, <code>LAB2_LATE</code> (scratch only), view <code>CALC_SUMMARY</code>, procedure <code>SP_MINI_COUNT</code>.</p>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G08, TC-G09, TC-G10, TC-G11, TC-G21 (key decryption, from file 02), TC-04-01, TC-04-02, TC-04-03, TC-04-04.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Go to <a href="05-lab3-dcm-fundamentals.md">05-lab3-dcm-fundamentals.md</a>.</p>
+</body></html>

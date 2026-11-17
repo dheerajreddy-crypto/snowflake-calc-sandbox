@@ -1,0 +1,738 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>02. Accounts and setup (file 02)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="02-accounts-and-setup-file-02">02. Accounts and setup (file 02)</h1>
+<blockquote>
+<p>Lab no: setup | File no: 02 | Time: 2 to 3 hours | Prerequisites: 00, 01, an email address, a laptop with a terminal | Modes supported: H/S, D (this file finds your mode) | Leaves behind: trial account, bootstrap run, tools installed, repository with the folder tree, secrets set, hybrid and DCM probes done and recorded.</p>
+<p><strong>READ THIS BEFORE YOU START: trial limits.</strong>
+1. <strong>Hybrid tables are not supported in Snowflake trial accounts</strong> (VERIFIED on two Snowflake pages, read 2026-11-16). The default path is <strong>Mode S</strong>: standard tables stand in for the two hybrid tables. Primary-key enforcement, row-level locking and secondary indexes are then shown as read-only steps. Probe H below records the real error (TC-G01).
+2. <strong>DCM Projects are available in all editions, but trial availability is not stated</strong> on the pages read. Probe D below tests it (TC-G02). If it fails, you are in <strong>Mode D-off</strong> and the DCM parts become read-along.
+3. <strong>The trial lasts 30 days or until the free credits run out, whichever comes first.</strong> The balance is about $400 (TC-G18, unconfirmed). Plan the labs inside that window. The resource monitor <code>SBX_CALC_RM</code> (20 credits, a choice of this pack) protects the credits.
+4. Upgrading to a paid account reaches Mode H but costs money. It is optional, never required.</p>
+</blockquote>
+<h2 id="order-of-work-read-this-first">Order of work (read this first)</h2>
+<p>The headings below follow the topic order of the brief. Do the work in this order:</p>
+<ol>
+<li>Create the trial account (section "Create the Snowflake trial account").</li>
+<li>First login safety: MFA, no daily use of <code>ACCOUNTADMIN</code>.</li>
+<li>Install the tools (section "Install the tools").</li>
+<li>Generate the key pair for the service user (section "Service user and key pair").</li>
+<li>Run the bootstrap SQL in a worksheet (last section), after replacing <code>&lt;LEARNER_USER&gt;</code> and <code>&lt;PUBLIC_KEY_BODY&gt;</code>.</li>
+<li>Create the connections, then run <code>snow connection test</code>.</li>
+<li>Create the GitHub repository, copy the pack into <code>docs/learning/</code>, set secrets and variables.</li>
+<li>Run the two probes (hybrid, DCM) and record your mode.</li>
+<li>Complete the verification checklist.</li>
+</ol>
+<h2 id="create-the-snowflake-trial-account">Create the Snowflake trial account</h2>
+<h3 id="what-the-trial-gives-you-and-what-it-does-not">What the trial gives you, and what it does not</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> sign-up needs a valid email only, no payment details. You choose cloud platform, region and edition at sign-up. The trial ends 30 days after sign-up or when free credits are used up, whichever is first, and then the account is suspended (https://docs.snowflake.com/en/user-guide/admin-trial-account, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> features not available in trial accounts include external network access, <strong>hybrid tables</strong>, outbound private connectivity, Snowflake Openflow and Duo for MFA. AI features stay off until a credit card is added (same page, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G18]:</strong> the free balance. Snowflake's sign-up page (seen only as a search snippet) says about $400 of free usage. The docs page gives no number. How to check at lab time: read the balance tile in Snowsight after sign-up. Record the result in file 13. Do not rely on a credit count.</p>
+</blockquote>
+<h3 id="decisions-to-record">Decisions to record</h3>
+<p>Write these three decisions in the Notes column of the Resume table in file 00.</p>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Recommendation</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cloud</td>
+<td><strong>AWS</strong>, a commercial region near you</td>
+<td>AWS and Azure are the clouds where hybrid tables are generally available; Google Cloud is preview only. Matters only if you upgrade later.</td>
+</tr>
+<tr>
+<td>Region</td>
+<td>Any commercial region near you; avoid special government regions</td>
+<td>Hybrid tables are not available in US SnowGov regions.</td>
+</tr>
+<tr>
+<td>Edition</td>
+<td><strong>Enterprise</strong> if the form offers it, otherwise <strong>Standard</strong></td>
+<td>Neither edition is required for DCM. Enterprise features may burn extra credits, so do not turn on optional features.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G24]:</strong> whether hybrid tables need a particular edition. The pages read on 2026-11-16 state no edition requirement. How to check: open the Snowflake page "Hybrid tables clouds and regions" at lab time. Record in file 13.</p>
+<p><strong>VERIFIED:</strong> hybrid tables are generally available in commercial AWS and Azure regions, in preview in Google Cloud regions, not available in US SnowGov regions, and "not supported in trial accounts" (https://docs.snowflake.com/en/user-guide/tables-hybrid-limitations, read 2026-11-16).</p>
+</blockquote>
+<h3 id="dcm-and-hybrid-tables-in-a-trial-what-to-expect-and-the-fallback">DCM and hybrid tables in a trial: what to expect and the fallback</h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Trial status</th>
+<th>What the pack does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DCM Projects</td>
+<td>Available in all editions. Trial availability is not stated explicitly on the pages read.</td>
+<td>Probe D below tests it. Default is Mode D (on).</td>
+</tr>
+<tr>
+<td>Hybrid tables</td>
+<td><strong>Not supported in trial accounts</strong> (two Snowflake pages say so).</td>
+<td>Probe H below tests it. Default is <strong>Mode S</strong>: standard tables stand in for the two hybrid tables.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM Projects are available for all Snowflake editions, with no DCM-specific cost beyond compute (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G02]:</strong> whether <code>CREATE DCM PROJECT</code> works in a trial account. How to check: run Probe D below. Record the exact error if it fails.</p>
+</blockquote>
+<p><strong>Plan A (default, free): Mode S + D.</strong> Everything runs except the steps that need real hybrid tables. In those steps you see a "read-only" block with the expected behaviour taken from the Snowflake documentation, plus a table of what differs.</p>
+<p><strong>Plan B (optional, costs money): upgrade to reach Mode H.</strong> Adding a credit card upgrades the account. Remaining free credits still apply (stated on the trial page you read; re-check at upgrade time). Use an AWS or Azure region. The resource monitor <code>SBX_CALC_RM</code> keeps working. Never treat the upgrade as required. If you switch modes later, you need a fresh Flyway history because the checksums of the <code>hybrid/</code> and <code>standard/</code> migrations differ. The labs that change under Plan B are 06, 07, 09 and 11.</p>
+<p><strong>If DCM is unavailable (Mode D-off):</strong> labs 05 to 11 become read-along for the DCM parts. The <code>CREATE OR ALTER</code> statement reproduces the per-object behaviour of <code>DEFINE</code> by hand (a <code>DEFINE</code> behaves like <code>CREATE OR ALTER</code>), so you can still see the diff idea.</p>
+<h3 id="password-phases-do-not-apply-to-trials">Password phases do not apply to trials</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> Snowflake's password phase-outs (mandatory MFA, no new legacy service users, passwords blocked for non-human users) do not apply to reader accounts, trial accounts or Snowflake Postgres; single-factor password sign-in continues to work there (https://docs.snowflake.com/en/user-guide/security-mfa-rollout, read 2026-11-16).</p>
+</blockquote>
+<p>You still build a <code>TYPE = SERVICE</code> user with a key pair, because that is NAIC's reality (passwords for service users are being blocked there) and it is what your GitHub workflows will use.</p>
+<h2 id="first-login-safety">First login safety</h2>
+<ol>
+<li>Sign up with <code>dheeraj.banda3@gmail.com</code>. Pick a strong, unique password in a password manager.</li>
+<li>Set up multi-factor authentication (MFA) on your human user. Duo is not available in trials; use an authenticator app or passkey, whatever the sign-up screen offers.</li>
+</ol>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G19]:</strong> what the first-login MFA prompt looks like in a fresh trial and which factors are offered. How to check: observe at sign-up. Record in file 13.</p>
+</blockquote>
+<ol start="3">
+<li>Your first user holds <code>ACCOUNTADMIN</code>. Use it only for the bootstrap and the resource monitor. Snowflake recommends at least two <code>ACCOUNTADMIN</code> users and never making it the default role. The bootstrap changes your <strong>default role</strong> to <code>SBX_CALC_DEV</code>.</li>
+<li>Write your account identifier into your own notes (not into any repository file). It has the form <code>&lt;ORGANISATION&gt;-&lt;ACCOUNT_NAME&gt;</code>. Wherever this pack writes <code>&lt;ACCOUNT_IDENTIFIER&gt;</code>, you substitute it locally.</li>
+</ol>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-02-01]:</strong> the exact place in Snowsight where the account identifier is shown. How to check: open the account menu at the bottom left and look for "Account details" or the account locator. Record in file 13.</p>
+</blockquote>
+<h2 id="cost-controls">Cost controls</h2>
+<p>Cost is controlled by four things, all set by the bootstrap:</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Value</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Warehouse <code>SBX_CALC_WH</code></td>
+<td>size <code>XSMALL</code>, <code>AUTO_SUSPEND = 60</code>, <code>AUTO_RESUME = TRUE</code>, <code>INITIALLY_SUSPENDED = TRUE</code></td>
+<td>Credits are used only while it runs. Docs recommend short auto-suspend.</td>
+</tr>
+<tr>
+<td>Resource monitor <code>SBX_CALC_RM</code></td>
+<td>quota 20 credits, monthly, notify at 50 and 80 percent, suspend at 90, suspend immediately at 100</td>
+<td>Hard stop on runaway cost. The quota of 20 is this pack's choice, not a Snowflake default.</td>
+</tr>
+<tr>
+<td>Clone retention</td>
+<td><code>DATA_RETENTION_TIME_IN_DAYS = 0</code> on clones and scratch schemas</td>
+<td>Dropped clones leave no Time Travel storage.</td>
+</tr>
+<tr>
+<td>Cleanup section in every lab</td>
+<td>drop what you no longer need</td>
+<td>Storage is deducted from the trial balance at on-demand rates.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>VERIFIED:</strong> only <code>ACCOUNTADMIN</code> can create resource monitors. You assign a monitor to a warehouse with <code>ALTER WAREHOUSE &lt;wh&gt; SET RESOURCE_MONITOR = &lt;rm&gt;</code>. <code>SUSPEND</code> waits for running queries to finish; <code>SUSPEND_IMMEDIATE</code> cancels them. A warehouse-level monitor cannot stop cloud-services credits (https://docs.snowflake.com/en/sql-reference/sql/create-resource-monitor and https://docs.snowflake.com/en/user-guide/resource-monitors, read 2026-11-16).</p>
+<p><strong>VERIFIED:</strong> warehouse credits are consumed only while the warehouse runs; serverless features also use credits; storage cost is deducted from the balance (trial page, read 2026-11-16).</p>
+</blockquote>
+<p>Habits: check the balance tile at the start of each session. Run <code>ALTER WAREHOUSE SBX_CALC_WH SUSPEND;</code> at the end of a session. Never leave a clone database around overnight.</p>
+<h2 id="roles-and-users-mirroring-naic">Roles and users mirroring NAIC</h2>
+<table>
+<thead>
+<tr>
+<th>Sandbox role</th>
+<th>Mirrors in NAIC</th>
+<th>What it can do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SBX_CICD_PIPELINE</code></td>
+<td><code>CICD_PIPELINE</code></td>
+<td>Owns and deploys every engine object. DCM project owner for INT, QA and PROD. Flyway runs as it. Owns the clone procedures.</td>
+</tr>
+<tr>
+<td><code>SBX_CALC_DEV</code></td>
+<td><code>COMMON_INT_CALC_DEV</code></td>
+<td>Developer role. Owns the objects inside a ticket clone. Calls the clone procedures. Cannot create databases.</td>
+</tr>
+<tr>
+<td><code>SBX_FN_CALC_ENGINE_NP</code></td>
+<td><code>FN_NAIC_CALC_ENGINE_NP</code></td>
+<td>Runtime app role. DML only, no DDL. Used in Lab 7.</td>
+</tr>
+<tr>
+<td><code>SBX_CALC_READER</code></td>
+<td>a read-only role</td>
+<td><code>SELECT</code> only.</td>
+</tr>
+</tbody>
+</table>
+<p>Hierarchy: <code>SBX_CALC_DEV</code> is granted to <code>SBX_CICD_PIPELINE</code> (this mirrors the Terraform grant that lets the owner's-rights clone procedure hand objects to the developer role); <code>SBX_CICD_PIPELINE</code> is granted to <code>SYSADMIN</code> (so <code>SYSADMIN</code> can drop stray clones).</p>
+<p>Your learner user holds all four roles so you can play both sides. In NAIC developers do not hold the pipeline role. The default role is <code>SBX_CALC_DEV</code>.</p>
+<p>Rules the bootstrap follows: databases are created by <code>SYSADMIN</code> (this stands in for Terraform); schemas are then owned by <code>SBX_CICD_PIPELINE</code>; databases stay owned by <code>SYSADMIN</code>; no role gets <code>ACCOUNTADMIN</code>, <code>MANAGE GRANTS</code> or any <code>CREATE ... ON ACCOUNT</code> privilege except that <code>SBX_CICD_PIPELINE</code> gets <code>CREATE DATABASE ON ACCOUNT</code> (the clone procedure needs it, as in NAIC where the procedure owner creates databases).</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> a new hybrid table needs the separate <code>CREATE HYBRID TABLE</code> privilege on the schema since behaviour change bundle 2026_02 (BCR-2157), unless you own the schema (https://docs.snowflake.com/en/release-notes/bcr-bundles/2026_02/bcr-2157, read 2026-11-16). The pipeline role owns the schema, so it does not need the grant; the bootstrap contains it as a commented teaching line.</p>
+<p><strong>TO-CONFIRM [TC-G14]:</strong> exact <code>GRANT CREATE HYBRID TABLE ON SCHEMA</code> syntax. How to check: SQL reference for <code>GRANT</code>, or try it in a paid account. Record in file 13.</p>
+<p><strong>TO-CONFIRM [TC-02-02]:</strong> core Snowflake DDL used by the bootstrap (<code>CREATE ROLE</code>, <code>CREATE DATABASE</code>, <code>CREATE SCHEMA</code>, <code>CREATE WAREHOUSE</code>, <code>GRANT ... ON FUTURE ...</code>, <code>GRANT OWNERSHIP ... COPY CURRENT GRANTS</code>, <code>GRANT CREATE DATABASE ON ACCOUNT</code>) is long-standing Snowflake syntax that was not re-read on 2026-11-16. How to check: run the bootstrap; any syntax error names the line. Also confirm that <code>SECURITYADMIN</code> can run <code>GRANT OWNERSHIP</code> on schemas owned by <code>SYSADMIN</code> (it holds the <code>MANAGE GRANTS</code> privilege by default). Record in file 13.</p>
+</blockquote>
+<h2 id="service-user-and-key-pair">Service user and key pair</h2>
+<h3 id="why-a-service-user-with-a-key-pair">Why a service user with a key pair</h3>
+<p>Automation (GitHub Actions) needs an identity that is not a person. Snowflake <code>TYPE = SERVICE</code> users cannot sign in with a password, cannot enroll in MFA and cannot have a password set. Snowflake is blocking passwords for all non-human users in production accounts (phases from 2026), which is why NAIC moves to key pairs or workload identity federation. A key pair works like this: you keep a <strong>private key</strong> secret; Snowflake stores the matching <strong>public key</strong>; the client proves it holds the private key by signing a short-lived token (JWT).</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> a <code>TYPE = SERVICE</code> user cannot log in with a password or use MFA; <code>ALTER USER ... RESET PASSWORD</code> is not allowed for it (https://docs.snowflake.com/en/user-guide/admin-user-management, read 2026-11-16).</p>
+</blockquote>
+<h3 id="generate-the-key-pair-terminal-on-your-laptop-not-in-the-repository">Generate the key pair (Terminal, on your laptop, not in the repository)</h3>
+<pre><code class="language-bash">mkdir -p ~/.snowflake-sandbox/keys
+chmod 700 ~/.snowflake-sandbox/keys
+cd ~/.snowflake-sandbox/keys
+
+# Encrypted private key, AES-256-CBC (recommended). It will ask you for a passphrase.
+openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 aes-256-cbc -inform PEM -out sbx_svc_cicd_rsa_key.p8
+
+# Public key
+openssl rsa -in sbx_svc_cicd_rsa_key.p8 -pubout -out sbx_svc_cicd_rsa_key.pub
+
+chmod 600 sbx_svc_cicd_rsa_key.p8
+</code></pre>
+<p>You should see: two files, <code>sbx_svc_cicd_rsa_key.p8</code> and <code>sbx_svc_cicd_rsa_key.pub</code>. Choose a strong passphrase <code>&lt;PASSPHRASE&gt;</code> and keep it in your password manager. The assistant never sees it.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> minimum 2048-bit RSA; use <code>aes-256-cbc</code> for the encrypted key, not <code>des3</code>; commands as above (https://docs.snowflake.com/en/user-guide/key-pair-auth, read 2026-11-16).</p>
+</blockquote>
+<p>Print the public key body for the bootstrap SQL (no header or footer lines, one line):</p>
+<pre><code class="language-bash">grep -v -- '-----' ~/.snowflake-sandbox/keys/sbx_svc_cicd_rsa_key.pub | tr -d '\n'; echo
+</code></pre>
+<p>Paste the output in place of <code>&lt;PUBLIC_KEY_BODY&gt;</code> in the bootstrap (last statement of part 6). The private key never goes into the repository, a chat or a ticket.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> register the public key with <code>ALTER USER &lt;user&gt; SET RSA_PUBLIC_KEY = '&lt;key body without BEGIN/END lines&gt;'</code>. Check the registration with <code>DESC USER</code>, which shows <code>RSA_PUBLIC_KEY_FP</code>. A newer named form exists: <code>ALTER USER &lt;user&gt; ADD KEY PAIR &lt;name&gt; PUBLIC_KEY = '...'</code> (same key-pair page, read 2026-11-16). The pack uses the classic form because it is shorter; try the named form as a follow-up if you like.</p>
+<p><strong>TO-CONFIRM [TC-G12]:</strong> whether <code>CREATE USER ... TYPE = SERVICE ... RSA_PUBLIC_KEY = '...'</code> works in one statement. The pack avoids the question by using three statements (create, grant role, set key). How to check: the <code>CREATE USER</code> reference page. Record in file 13.</p>
+</blockquote>
+<h3 id="store-the-key-as-a-github-secret-later-in-the-repository-section">Store the key as a GitHub secret (later, in the repository section)</h3>
+<p>You will paste the contents of the <code>.p8</code> file into the GitHub secret <code>SNOWFLAKE_PRIVATE_KEY_RAW</code> and the passphrase into <code>SNOWFLAKE_PRIVATE_KEY_PASSPHRASE</code>. You paste them yourself in the browser. Never put them in a file in the repository.</p>
+<h3 id="if-a-jwt-login-fails">If a JWT login fails</h3>
+<p>The error is <code>JWT token is invalid</code> with code 390144, which is a general wrapper. An admin can read the detailed code with <code>SELECT JSON_EXTRACT_PATH_TEXT(SYSTEM$GET_LOGIN_FAILURE_DETAILS('&lt;uuid&gt;'), 'errorCode');</code>. Frequent causes: wrong account identifier (394307), user name used instead of <code>LOGIN_NAME</code> (394300), clock skew (394302), expired token (394303), fingerprint mismatch (394304), private key does not match the registered public key (394306). File 12 has the table.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> codes and causes from https://docs.snowflake.com/en/user-guide/key-pair-auth-troubleshooting (read 2026-11-16).</p>
+</blockquote>
+<h2 id="install-the-tools">Install the tools</h2>
+<p>You need <code>git</code>, the Snowflake CLI (<code>snow</code>), a Flyway runner and (for Flyway via Docker) Docker.</p>
+<h3 id="git">git</h3>
+<p>Terminal: <code>git --version</code>. Install from your package manager if missing. You run all git commands yourself.</p>
+<h3 id="snowflake-cli">Snowflake CLI</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM Projects require Snowflake CLI <strong>3.24.0 or higher</strong> for the commands in the guide (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use, read 2026-11-16). PyPI showed <code>snowflake-cli</code> 3.33.0 on 2026-11-16. This pack pins 3.33.0 and tells you to re-check the pin at lab time.</p>
+<p><strong>TO-CONFIRM [TC-G16]:</strong> NAIC working notes mention 3.16 as the minimum for DCM; the public docs say 3.24.0. Use the docs figure. How to check: <code>snow --version</code> after install, and the DCM usage page at lab time. Record in file 13.</p>
+</blockquote>
+<p>Terminal:</p>
+<pre><code class="language-bash">python3 -m venv ~/.snowflake-sandbox/venv
+. ~/.snowflake-sandbox/venv/bin/activate
+pip install &quot;snowflake-cli==3.33.0&quot;
+snow --version
+snow dcm --help
+</code></pre>
+<p>You should see: a version number 3.33.0 (or newer if you changed the pin) and a list of DCM commands: <code>create</code>, <code>deploy</code>, <code>describe</code>, <code>drop</code>, <code>drop-deployment</code>, <code>list</code>, <code>list-deployments</code>, <code>plan</code>, <code>preview</code>, <code>purge</code>, <code>test</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-02-03]:</strong> which Python versions the CLI 3.33.0 supports. How to check: <code>pip install</code> error text or the PyPI page. If install fails on a very new Python, use Python 3.12 (NAIC laptops use a 3.12 virtual environment because of a TLS issue that does not affect your home laptop). Record in file 13.</p>
+</blockquote>
+<h3 id="flyway-community-edition">Flyway (Community edition)</h3>
+<blockquote>
+<p><strong>VERIFIED:</strong> Flyway 13.12.2 was the current stable release on 2026-11-16 (released 2026-11-12). Docker tags <code>redgate/flyway:13.12.2</code> and <code>flyway/flyway:13.12.2</code> exist. Community edition needs no license. The Snowflake JDBC driver ships with the command line (https://documentation.red-gate.com/flyway/release-notes-and-older-versions/release-notes-for-flyway-engine and https://documentation.red-gate.com/flyway/reference/usage/flyway-docker, read 2026-11-16).</p>
+</blockquote>
+<p>The pack uses Docker, so there is nothing to install except Docker itself. Pin the version, never <code>latest</code>. Docker usage seen in the docs: mount your project folder and set the working directory:</p>
+<pre><code class="language-bash">docker run --rm -v &quot;$PWD/flyway/lab2_scratch:/flyway/project&quot; redgate/flyway:13.12.2 -workingDirectory=project info
+</code></pre>
+<p>Create a shell helper so later labs are shorter. Terminal (add to your shell profile if you like):</p>
+<pre><code class="language-bash">export FLYWAY_VERSION=13.12.2
+fw () {  # usage: fw &lt;project-folder&gt; &lt;flyway arguments...&gt;
+  local proj=&quot;$1&quot;; shift
+  docker run --rm \
+    -v &quot;$PWD/$proj:/flyway/project&quot; \
+    -v &quot;$HOME/.snowflake-sandbox/keys:/keys:ro&quot; \
+    -e PRIVATE_KEY_PASSPHRASE \
+    -e FLYWAY_URL -e FLYWAY_LOCATIONS -e FLYWAY_OUT_OF_ORDER -e FLYWAY_CLEAN_DISABLED \
+    -e FLYWAY_PLACEHOLDERS_CALC_DB -e FLYWAY_PLACEHOLDERS_CALC_SCHEMA \
+    &quot;redgate/flyway:${FLYWAY_VERSION}&quot; -workingDirectory=project &quot;$@&quot;
+}
+</code></pre>
+<p>Check it with <code>fw flyway/lab2_scratch -v</code> after the repository exists (Lab 2 does this again).</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-02-04]:</strong> that the Docker image accepts <code>-v</code> as the version flag and that the environment variable pass-through above works as written. How to check: run <code>docker run --rm redgate/flyway:13.12.2 -v</code>. Record in file 13. Fallback: download the Flyway command-line archive from the Redgate site and run <code>flyway -v</code> locally; adjust <code>fw</code> to call it.</p>
+<p><strong>TO-CONFIRM [TC-G21]:</strong> the JVM flag for encrypted private keys. The Snowflake driver page says encrypted keys on Linux may need <code>JAVA_OPTS='-Dnet.snowflake.jdbc.useBundledBouncyCastleForPrivateKeyDecryption=true'</code>. How to check: if <code>flyway info</code> fails with a key-decryption error, add <code>-e JAVA_OPTS</code> to <code>fw</code> and set that value. Record in file 13. Fallback for the sandbox only: use a second, unencrypted key kept outside the repository.</p>
+</blockquote>
+<p>Optional: pin by digest. Seen on 2026-11-16 (re-check): <code>redgate/flyway:13.12.2</code> manifest-list digest <code>sha256:ccc7fe019c49ea1f7d1a63bab7c4f5d490570783cc0ccf8edccc49a209f5f7c0</code>.</p>
+<h3 id="snowflake-cli-connections">Snowflake CLI connections</h3>
+<p>File <code>~/.snowflake/connections.toml</code> (create it with <code>snow connection add</code> or by hand). <strong>Never write a password in this file.</strong> Four connections, all with warehouse <code>SBX_CALC_WH</code> and database <code>SBX_INT</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Connection</th>
+<th>User</th>
+<th>Role</th>
+<th>Auth</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sbx_admin</code></td>
+<td><code>&lt;LEARNER_USER&gt;</code></td>
+<td><code>ACCOUNTADMIN</code></td>
+<td>interactive</td>
+<td>Bootstrap and resource monitor only</td>
+</tr>
+<tr>
+<td><code>sbx_dev</code></td>
+<td><code>&lt;LEARNER_USER&gt;</code></td>
+<td><code>SBX_CALC_DEV</code></td>
+<td>interactive</td>
+<td>Everyday labs</td>
+</tr>
+<tr>
+<td><code>sbx_owner</code></td>
+<td><code>&lt;LEARNER_USER&gt;</code></td>
+<td><code>SBX_CICD_PIPELINE</code></td>
+<td>interactive</td>
+<td>Acting as pipeline or owner from the laptop</td>
+</tr>
+<tr>
+<td><code>sbx_cicd</code></td>
+<td><code>SBX_SVC_CICD</code></td>
+<td><code>SBX_CICD_PIPELINE</code></td>
+<td>key pair</td>
+<td>Same login GitHub Actions uses</td>
+</tr>
+</tbody>
+</table>
+<p>Example shape (a guide; the exact keys may differ):</p>
+<pre><code class="language-toml">[sbx_dev]
+account = &quot;&lt;ACCOUNT_IDENTIFIER&gt;&quot;
+user = &quot;&lt;LEARNER_USER&gt;&quot;
+role = &quot;SBX_CALC_DEV&quot;
+warehouse = &quot;SBX_CALC_WH&quot;
+database = &quot;SBX_INT&quot;
+
+[sbx_cicd]
+account = &quot;&lt;ACCOUNT_IDENTIFIER&gt;&quot;
+user = &quot;SBX_SVC_CICD&quot;
+role = &quot;SBX_CICD_PIPELINE&quot;
+warehouse = &quot;SBX_CALC_WH&quot;
+database = &quot;SBX_INT&quot;
+authenticator = &quot;SNOWFLAKE_JWT&quot;
+private_key_file = &quot;&lt;ABSOLUTE_PATH_TO&gt;/sbx_svc_cicd_rsa_key.p8&quot;   # TO-CONFIRM TC-G27
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>snow connection add --connection-name jwt --authenticator SNOWFLAKE_JWT --private-key-file &lt;path&gt;</code> is the documented way to add a key-pair connection. The environment variable <code>PRIVATE_KEY_PASSPHRASE</code> takes precedence over a passphrase stored in the connection, so keep the passphrase in your shell, not in the file. <code>snow connection test</code> tests a connection (https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-connections, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-G27]:</strong> the exact <code>connections.toml</code> key for the private key file. How to check: run <code>snow connection add</code> for <code>sbx_cicd</code> and open the generated file. Record in file 13.</p>
+<p><strong>TO-CONFIRM [TC-02-05]:</strong> how the interactive login works for your human user (password plus MFA prompt, a browser flow, or a second key pair registered to your own user). How to check: run <code>snow connection test -c sbx_dev</code> and watch the prompts. If prompts are awkward, register a second key pair for <code>&lt;LEARNER_USER&gt;</code> with <code>ALTER USER &lt;LEARNER_USER&gt; SET RSA_PUBLIC_KEY_2 = '...'</code> and use <code>private_key_file</code> in <code>sbx_dev</code>, <code>sbx_owner</code> and <code>sbx_admin</code>. Record in file 13.</p>
+</blockquote>
+<p>Always pass <code>-c &lt;connection&gt;</code> explicitly in later labs. Connection targets in a DCM manifest do not select the connection or role for you.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM manifest targets do not select the CLI connection, account or role; the CLI warns on an account mismatch but does not switch (https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/dcm-commands/overview, read 2026-11-16).</p>
+</blockquote>
+<h2 id="github-repository">GitHub repository</h2>
+<h3 id="visibility-public">Visibility: public</h3>
+<p>Create a repository named <strong><code>snowflake-calc-sandbox</code></strong> under your account, default branch <code>main</code>, visibility <strong>public</strong>.</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> required reviewers and wait timers on environments are available for public repositories on all current plans. For private repositories you need GitHub Pro, Team or Enterprise features, and a Free-plan user who makes a public repository private loses the configured rules and secrets (https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments, read 2026-11-16).</p>
+<p><strong>TO-CONFIRM [TC-02-06]:</strong> your own GitHub plan and whether private-repository environments would work for you. The page read is slightly inconsistent about Pro and Team. How to check: your GitHub account settings, plan section. The pack assumes public, which is safe because the repository contains no secrets (the <code>.gitignore</code> below blocks keys and env files).</p>
+</blockquote>
+<h3 id="target-layout">Target layout</h3>
+<pre><code class="language-text">snowflake-calc-sandbox/
+  README.md
+  .gitignore                         # includes: out/ , .env.flyway , *.p8 , *.pem , rsa_key*
+  dcm/
+    calc_engine/
+      manifest.yml
+      sources/
+        definitions/
+          sequences/    SEQ_CALC_ID.sql  SEQ_FORMULA_ID.sql  SEQ_EXECUTION_ID.sql  SEQ_WORKFLOW_ID.sql  SEQ_AUDIT_EVENT_ID.sql
+          tables/       CALCULATIONS.sql  FORMULAS.sql  FORMULA_CATEGORIES.sql  EXECUTIONS.sql  DATA_CHANGE_LOG.sql
+          functions/    FN_APPLY_REDIRECTS.sql
+          views/        ENV_CONFIG.sql
+          procedures/   SP_ADD_CATEGORY.sql  SP_REGISTER_CALCULATION.sql  SP_ACTIVATE_DRAFT_CALCULATION.sql  SP_COMPUTE_MINI_RESULT.sql
+          grants/       access.sql
+        macros/                       # optional, only if a lab needs one
+      out/                            # gitignored, written by --save-output
+    lab3_scratch/                     # throwaway DCM project used only in Lab 3 (own manifest.yml)
+  flyway/
+    flyway.toml
+    .env.flyway.example               # committed; the real .env.flyway is gitignored
+    migrations/
+      common/       (files identical in both hybrid modes)
+      hybrid/       (Mode H variants: real hybrid tables and indexes)
+      standard/     (Mode S variants: standard-table stand-ins)
+    lab2_scratch/                     # separate small Flyway project for Lab 2 only
+      flyway.toml
+      migrations/
+  sql/
+    bootstrap/      snowflake-sandbox-bootstrap.sql   (same text as the code block at the end of this file)
+    lab1/           procedures_v1.sql  tables_v1.sql  seed_v1.sql  drift_detective.sql
+    clone_support/  calc_dev_clone_procs.sql          (deployed with snow sql, not by DCM or Flyway)
+    capstone/       capstone_seed.sql
+  scripts/
+    refresh_dev_clone.sh
+    check_plan_for_drops.py
+    assert_zero_int_writes.sql
+    smoke_clone.sql
+  tests/            (optional placeholder folder for smoke SQL referenced by workflows)
+  .github/workflows/
+    validate.yml
+    pr-clone-check.yml
+    deploy-int.yml
+    promote-qa-prod.yml
+    sweep-stale-clones.yml
+    oidc-connection-test.yml          # optional stretch, Lab 6
+  docs/learning/                      # this pack (00 to 13, index)
+</code></pre>
+<p>Local folder name: <code>snowflake-calc-sandbox</code>. The key folder <code>~/.snowflake-sandbox/keys/</code> stays <strong>outside</strong> the repository.</p>
+<h3 id="create-the-skeleton-terminal-you-run-git">Create the skeleton (Terminal; you run git)</h3>
+<pre><code class="language-bash">git clone https://github.com/&lt;GITHUB_OWNER&gt;/snowflake-calc-sandbox.git
+cd snowflake-calc-sandbox
+mkdir -p dcm/calc_engine/sources/definitions/{sequences,tables,functions,views,procedures,grants} \
+         dcm/calc_engine/sources/macros dcm/lab3_scratch \
+         flyway/migrations/{common,hybrid,standard} flyway/lab2_scratch/migrations \
+         sql/{bootstrap,lab1,clone_support,capstone} scripts tests .github/workflows docs/learning
+cp -R &lt;PATH_TO_THIS_PACK&gt;/*.md &lt;PATH_TO_THIS_PACK&gt;/*.html docs/learning/
+</code></pre>
+<p>Create a <code>.gitignore</code> with this content (placeholders only, no secrets):</p>
+<pre><code class="language-text">out/
+.env.flyway
+*.p8
+*.pem
+rsa_key*
+.DS_Store
+</code></pre>
+<p>Empty folders are not stored by git; add a <code>.gitkeep</code> file in the ones you want kept. Then you run <code>git add</code>, <code>git commit</code> and <code>git push</code> yourself. The assistant does not.</p>
+<p>Copy the bootstrap block from the end of this file to <code>sql/bootstrap/snowflake-sandbox-bootstrap.sql</code> with the placeholders left in (never commit your substituted copy; the public key body is not secret, but your user name is personal).</p>
+<h3 id="secrets-and-variables-github-ui">Secrets and variables (GitHub UI)</h3>
+<p>Settings, then Secrets and variables, then Actions (check the current menu names in the UI).</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Name</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Secret</td>
+<td><code>SNOWFLAKE_ACCOUNT</code></td>
+<td>your <code>&lt;ACCOUNT_IDENTIFIER&gt;</code></td>
+</tr>
+<tr>
+<td>Secret</td>
+<td><code>SNOWFLAKE_USER</code></td>
+<td><code>SBX_SVC_CICD</code></td>
+</tr>
+<tr>
+<td>Secret</td>
+<td><code>SNOWFLAKE_PRIVATE_KEY_RAW</code></td>
+<td>the full contents of <code>sbx_svc_cicd_rsa_key.p8</code></td>
+</tr>
+<tr>
+<td>Secret</td>
+<td><code>SNOWFLAKE_PRIVATE_KEY_PASSPHRASE</code></td>
+<td>your <code>&lt;PASSPHRASE&gt;</code> (the workflow maps it to <code>PRIVATE_KEY_PASSPHRASE</code>)</td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>SNOWFLAKE_ROLE</code></td>
+<td><code>SBX_CICD_PIPELINE</code></td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>SNOWFLAKE_WAREHOUSE</code></td>
+<td><code>SBX_CALC_WH</code></td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>HYBRID_MODE</code></td>
+<td><code>H</code> or <code>S</code> (from Probe H)</td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>DCM_MODE</code></td>
+<td><code>on</code> or <code>off</code> (from Probe D)</td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>SNOW_CLI_VERSION</code></td>
+<td><code>3.33.0</code></td>
+</tr>
+<tr>
+<td>Variable</td>
+<td><code>FLYWAY_VERSION</code></td>
+<td><code>13.12.2</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>snow</code> reads <code>SNOWFLAKE_PRIVATE_KEY_RAW</code> for CI use, and the passphrase from the environment variable <code>PRIVATE_KEY_PASSPHRASE</code> (configure-connections page, read 2026-11-16).</p>
+</blockquote>
+<p>GitHub environments <code>int</code>, <code>qa</code>, <code>prod</code> and <code>pr-clone</code> are created in Lab 6, step by step.</p>
+<h2 id="probes-find-your-mode">Probes: find your mode</h2>
+<p>Run in <strong>Snowsight worksheet</strong> after the bootstrap, as the pipeline role. Use the role selector or <code>USE ROLE</code>.</p>
+<pre><code class="language-sql">USE ROLE SBX_CICD_PIPELINE;
+USE WAREHOUSE SBX_CALC_WH;
+
+-- Probe H: hybrid tables
+CREATE HYBRID TABLE SBX_INT.CALC_SUPPORT.ZZ_HYBRID_PROBE (ID NUMBER PRIMARY KEY);
+-- success: run the next line, then HYBRID_MODE = H
+DROP TABLE IF EXISTS SBX_INT.CALC_SUPPORT.ZZ_HYBRID_PROBE;
+
+-- Probe D: DCM projects
+CREATE DCM PROJECT SBX_INT.LAB3_SCRATCH.ZZ_DCM_PROBE;
+-- success: run the next line, then DCM_MODE = on
+DROP DCM PROJECT SBX_INT.LAB3_SCRATCH.ZZ_DCM_PROBE;
+</code></pre>
+<p>You should see: Probe H most likely fails in a trial with an error saying the feature is not supported. <strong>Copy the exact error text</strong> into file 13 under TC-G01. That means <code>HYBRID_MODE = S</code>. Probe D should succeed; if it fails, copy the error under TC-G02 and set <code>DCM_MODE = off</code>.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G01]:</strong> the exact error when creating a hybrid table in a trial. Record the real text.</p>
+<p><strong>TO-CONFIRM [TC-G02]:</strong> whether <code>CREATE DCM PROJECT</code> works in a trial. Record the result.</p>
+<p><strong>VERIFIED:</strong> the create syntax <code>CREATE [OR REPLACE] DCM PROJECT [IF NOT EXISTS] &lt;name&gt; [COMMENT = '...']</code>, the privilege <code>CREATE DCM PROJECT</code> on a schema, and <code>DROP DCM PROJECT [IF EXISTS] &lt;name&gt;</code> (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use and .../dcm-projects-manage, read 2026-11-16).</p>
+</blockquote>
+<p>Record <code>HYBRID_MODE</code> and <code>DCM_MODE</code> in the Resume table in file 00 and set the GitHub variables.</p>
+<h2 id="verification-checklist">Verification checklist</h2>
+<p>Tick each item.</p>
+<ul>
+<li>[ ] Trial account created; MFA set; I can sign in to Snowsight.</li>
+<li>[ ] Resource monitor <code>SBX_CALC_RM</code> exists and is assigned to <code>SBX_CALC_WH</code> (see the check query below).</li>
+<li>[ ] <code>snow --version</code> prints 3.24.0 or higher.</li>
+<li>[ ] <code>snow connection test -c sbx_dev</code> works.</li>
+<li>[ ] <code>snow connection test -c sbx_owner</code> works.</li>
+<li>[ ] <code>snow connection test -c sbx_cicd</code> works (key pair, passphrase from <code>PRIVATE_KEY_PASSPHRASE</code>).</li>
+<li>[ ] <code>fw flyway/lab2_scratch -v</code> (or <code>flyway -v</code>) prints 13.12.2.</li>
+<li>[ ] <code>DESC USER SBX_SVC_CICD</code> shows a value for <code>RSA_PUBLIC_KEY_FP</code>.</li>
+<li>[ ] Repository <code>snowflake-calc-sandbox</code> cloned with the layout above; <code>.gitignore</code> committed; the private key is <strong>not</strong> in the repository.</li>
+<li>[ ] GitHub secrets and variables set.</li>
+<li>[ ] Probes H and D run; modes recorded; results copied to file 13.</li>
+</ul>
+<p>Check queries (Snowsight, role <code>SBX_CALC_DEV</code> for the first two, <code>ACCOUNTADMIN</code> for the monitor):</p>
+<pre><code class="language-sql">SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE();
+SHOW GRANTS TO USER &lt;LEARNER_USER&gt;;
+SHOW RESOURCE MONITORS;   -- ACCOUNTADMIN only; look for SBX_CALC_RM
+DESC USER SBX_SVC_CICD;   -- look for RSA_PUBLIC_KEY_FP
+</code></pre>
+<h2 id="state-left-behind">State left behind</h2>
+<p>Trial account; bootstrap run; all databases, schemas, roles, <code>SBX_CALC_WH</code>, <code>SBX_CALC_RM</code>, <code>SBX_SVC_CICD</code> exist; <code>snow connection test</code> is OK for <code>sbx_dev</code>, <code>sbx_owner</code>, <code>sbx_cicd</code>; Flyway runs <code>-v</code>; the repository is cloned with the tree above; secrets are set; the hybrid probe is done, <code>HYBRID_MODE</code> recorded, probe table dropped.</p>
+<h2 id="open-items-for-file-13">Open items for file 13</h2>
+<p>TC-G01, TC-G02, TC-G12, TC-G14, TC-G16, TC-G18, TC-G19, TC-G21, TC-G24, TC-G27, TC-02-01, TC-02-02, TC-02-03, TC-02-04, TC-02-05, TC-02-06.</p>
+<h2 id="next">Next</h2>
+<p>Go to <a href="03-lab1-the-old-way.md">03-lab1-the-old-way.md</a>.</p>
+<hr />
+<h2 id="bootstrap-sql-snowflake-sandbox-bootstrapsql">Bootstrap SQL: <code>snowflake-sandbox-bootstrap.sql</code></h2>
+<p>How to run it: open a Snowsight worksheet. Replace <code>&lt;LEARNER_USER&gt;</code> (your login name) and <code>&lt;PUBLIC_KEY_BODY&gt;</code> (the one-line public key from the key section). Run it <strong>part by part</strong> in the order shown, each with the role stated in its first line. Run every statement in a part (use "Run all" within the part). Each part is safe to rerun.</p>
+<pre><code class="language-sql">-- =====================================================================
+-- snowflake-sandbox-bootstrap.sql
+-- Sandbox mirror of the NAIC calc-engine layout. Run in YOUR OWN trial
+-- account only. Placeholders: &lt;LEARNER_USER&gt;, &lt;PUBLIC_KEY_BODY&gt;.
+-- No secrets belong in this file.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- PART 1 (SECURITYADMIN): roles and the learner's grants
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+CREATE ROLE IF NOT EXISTS SBX_CICD_PIPELINE      COMMENT = 'Owner and deployer of engine objects (mirrors CICD_PIPELINE)';
+CREATE ROLE IF NOT EXISTS SBX_CALC_DEV           COMMENT = 'Developer role, owns clone objects (mirrors COMMON_INT_CALC_DEV)';
+CREATE ROLE IF NOT EXISTS SBX_FN_CALC_ENGINE_NP  COMMENT = 'Runtime app role, DML only (mirrors FN_NAIC_CALC_ENGINE_NP)';
+CREATE ROLE IF NOT EXISTS SBX_CALC_READER        COMMENT = 'Read-only role';
+
+-- Role hierarchy
+GRANT ROLE SBX_CALC_DEV      TO ROLE SBX_CICD_PIPELINE;  -- lets owner's-rights clone procedures hand objects to the dev role
+GRANT ROLE SBX_CICD_PIPELINE TO ROLE SYSADMIN;           -- lets SYSADMIN drop stray clones
+
+-- The learner holds all four roles (in NAIC developers do not hold the pipeline role)
+GRANT ROLE SBX_CALC_DEV, SBX_CICD_PIPELINE, SBX_FN_CALC_ENGINE_NP, SBX_CALC_READER TO USER &lt;LEARNER_USER&gt;;
+ALTER USER &lt;LEARNER_USER&gt; SET DEFAULT_ROLE = SBX_CALC_DEV;   -- never ACCOUNTADMIN as default
+
+-- ---------------------------------------------------------------------
+-- PART 2 (SYSADMIN): warehouse, databases, schemas  (stands in for Terraform)
+-- ---------------------------------------------------------------------
+USE ROLE SYSADMIN;
+
+CREATE WAREHOUSE IF NOT EXISTS SBX_CALC_WH
+  WAREHOUSE_SIZE      = 'XSMALL'
+  AUTO_SUSPEND        = 60
+  AUTO_RESUME         = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Sandbox warehouse, tiny on purpose';
+
+CREATE DATABASE IF NOT EXISTS SBX_INT      COMMENT = 'Mirrors COMMON_INT';
+CREATE DATABASE IF NOT EXISTS SBX_INT_FIN  COMMENT = 'Mirrors NAIC_INT_FINANCIAL_EDL (results)';
+CREATE DATABASE IF NOT EXISTS SBX_QA       COMMENT = 'Simulated QA';
+CREATE DATABASE IF NOT EXISTS SBX_PROD     COMMENT = 'Simulated PROD';
+
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CALC_SUPPORT;       -- engine objects, DCM project, Flyway history
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CALC_DEV_SUPPORT;   -- clone procedures
+CREATE SCHEMA IF NOT EXISTS SBX_INT.LAB2_SCRATCH;       -- Lab 2 Flyway playground
+CREATE SCHEMA IF NOT EXISTS SBX_INT.LAB3_SCRATCH;       -- Lab 3 DCM drop experiments
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_HAND;           -- capstone way 1
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_FLYWAY;         -- capstone way 2
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_DCM;            -- capstone way 3
+CREATE SCHEMA IF NOT EXISTS SBX_INT_FIN.FIN_CALCULATION;
+CREATE SCHEMA IF NOT EXISTS SBX_QA.CALC_SUPPORT;
+CREATE SCHEMA IF NOT EXISTS SBX_PROD.CALC_SUPPORT;
+
+-- ---------------------------------------------------------------------
+-- PART 3 (ACCOUNTADMIN): resource monitor and one account-level privilege
+-- Only ACCOUNTADMIN may create resource monitors.
+-- The quota of 20 credits is this pack's choice, not a Snowflake default.
+-- ---------------------------------------------------------------------
+USE ROLE ACCOUNTADMIN;
+
+CREATE OR REPLACE RESOURCE MONITOR SBX_CALC_RM WITH
+  CREDIT_QUOTA    = 20
+  FREQUENCY       = MONTHLY
+  START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 50  PERCENT DO NOTIFY
+           ON 80  PERCENT DO NOTIFY
+           ON 90  PERCENT DO SUSPEND
+           ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+
+ALTER WAREHOUSE SBX_CALC_WH SET RESOURCE_MONITOR = SBX_CALC_RM;
+
+-- The clone procedure (owned by the pipeline role) creates databases
+GRANT CREATE DATABASE ON ACCOUNT TO ROLE SBX_CICD_PIPELINE;
+
+-- ---------------------------------------------------------------------
+-- PART 4 (SECURITYADMIN): ownership of schemas and container grants
+-- Databases stay owned by SYSADMIN. Schemas go to the pipeline role.
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CALC_SUPPORT      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CALC_DEV_SUPPORT  TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.LAB2_SCRATCH      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.LAB3_SCRATCH      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_HAND          TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_FLYWAY        TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_DCM           TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_QA.CALC_SUPPORT       TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_PROD.CALC_SUPPORT     TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+
+-- Pipeline role: warehouse, databases. Schema-level create rights come with ownership.
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_QA       TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_PROD     TO ROLE SBX_CICD_PIPELINE;
+-- Needed in Lab 2 so the pipeline role can clone a schema (LAB2_BASELINE) inside SBX_INT
+GRANT CREATE SCHEMA ON DATABASE SBX_INT TO ROLE SBX_CICD_PIPELINE;
+
+-- Explicit teaching line: schema owners do not need it, shown so you see the privilege (TC-G14)
+-- GRANT CREATE HYBRID TABLE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;   -- TO-CONFIRM TC-G14
+
+-- DCM project creation privilege (owners do not strictly need it; explicit for learning)
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.CALC_SUPPORT  TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_QA.CALC_SUPPORT   TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_PROD.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.LAB3_SCRATCH  TO ROLE SBX_CICD_PIPELINE;
+
+-- Developer role
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT          TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_DEV_SUPPORT      TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT_FIN.FIN_CALCULATION   TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON ALL TABLES    IN SCHEMA SBX_INT.CALC_SUPPORT        TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA SBX_INT.CALC_SUPPORT        TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON ALL TABLES    IN SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE PROCEDURES IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE FUNCTIONS  IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE SEQUENCES  IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+-- USAGE on CREATE_CALC_DEV_CLONE(VARCHAR) and DROP_CALC_DEV_CLONE(VARCHAR) is granted by
+-- sql/clone_support/calc_dev_clone_procs.sql after each CREATE OR REPLACE (Lab 5).
+
+-- App role and read role: schema-level access only.
+-- Table-level grants are explicit per table (DCM access.sql in Lab 3, Flyway migrations in Lab 4),
+-- NOT future grants, so Lab 7 can give the audit table INSERT+SELECT only.
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_FN_CALC_ENGINE_NP;
+
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CALC_READER;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CALC_READER;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_READER;
+
+-- ---------------------------------------------------------------------
+-- PART 5 (SBX_CICD_PIPELINE): the results table that EDP's own Flyway owns in NAIC
+-- Created here by the platform lane so the sandbox has something to write to.
+-- ---------------------------------------------------------------------
+USE ROLE SBX_CICD_PIPELINE;
+
+CREATE TABLE IF NOT EXISTS SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE (
+  RESULT_ID    NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,
+  CALC_ID      NUMBER(38,0),
+  EXECUTION_ID NUMBER(38,0),
+  VALUE_NUMBER NUMBER(38,6),
+  LOADED_AT    TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+  PRIMARY KEY (RESULT_ID)
+);
+
+GRANT INSERT, SELECT ON TABLE SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE
+  TO ROLE SBX_FN_CALC_ENGINE_NP;
+
+-- ---------------------------------------------------------------------
+-- PART 6 (SECURITYADMIN): service user for automation (key pair, no password)
+-- Run this part after generating the key pair. Replace &lt;PUBLIC_KEY_BODY&gt;
+-- with the one-line key body (no BEGIN/END lines).
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+CREATE USER IF NOT EXISTS SBX_SVC_CICD
+  TYPE              = SERVICE
+  DEFAULT_ROLE      = SBX_CICD_PIPELINE
+  DEFAULT_WAREHOUSE = SBX_CALC_WH
+  COMMENT           = 'Automation identity used by GitHub Actions and the sbx_cicd connection';
+
+GRANT ROLE SBX_CICD_PIPELINE TO USER SBX_SVC_CICD;
+
+ALTER USER SBX_SVC_CICD SET RSA_PUBLIC_KEY = '&lt;PUBLIC_KEY_BODY&gt;';
+
+-- ---------------------------------------------------------------------
+-- PART 7: checks (read-only)
+-- ---------------------------------------------------------------------
+SHOW GRANTS TO ROLE SBX_CICD_PIPELINE;
+SHOW SCHEMAS IN DATABASE SBX_INT;
+DESC USER SBX_SVC_CICD;   -- RSA_PUBLIC_KEY_FP must be filled
+</code></pre>
+<p>You should see after Part 7: <code>SHOW SCHEMAS</code> lists <code>CALC_SUPPORT</code>, <code>CALC_DEV_SUPPORT</code>, <code>LAB2_SCRATCH</code>, <code>LAB3_SCRATCH</code>, <code>CAP_HAND</code>, <code>CAP_FLYWAY</code>, <code>CAP_DCM</code> and <code>PUBLIC</code>, with owner <code>SBX_CICD_PIPELINE</code> for the first seven. <code>DESC USER SBX_SVC_CICD</code> shows a non-empty <code>RSA_PUBLIC_KEY_FP</code>.</p>
+<p>Notes on what differs from the plain contract: the bootstrap adds <code>GRANT CREATE SCHEMA ON DATABASE SBX_INT TO ROLE SBX_CICD_PIPELINE</code> because Lab 2 clones a schema into <code>SBX_INT.LAB2_BASELINE</code> as the pipeline role.</p>
+</body></html>

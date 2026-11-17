@@ -1,0 +1,977 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Capstone and comparison (file 11)</title><style>
+:root { color-scheme: light; }
+body { font: 15px/1.6 -apple-system, system-ui, "Segoe UI", sans-serif;
+       max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2328; }
+h1,h2,h3 { line-height: 1.25; margin-top: 1.8rem; }
+h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .25rem; }
+code { background: #f0f3f6; padding: .15em .4em; border-radius: 4px;
+       font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+      padding: .9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 14px; }
+th, td { border: 1px solid #d0d7de; padding: 7px 11px; text-align: left; vertical-align: top; }
+th { background: #f0f4f8; }
+tr:nth-child(even) td { background: #fafbfc; }
+blockquote { border-left: 4px solid #d0d7de; margin: 1rem 0; padding: .2rem 1rem; color: #57606a; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+</style></head><body>
+<h1 id="capstone-and-comparison-file-11">Capstone and comparison (file 11)</h1>
+<blockquote>
+<p><strong>Lab no:</strong> capstone | <strong>File no:</strong> 11 | <strong>Time:</strong> 3 h | <strong>Prerequisites:</strong> file 10 (Lab 8) | <strong>Modes supported:</strong> H or S, D (way 3 and way 4 use standard stand-ins in Mode S; in Mode D-off the DCM parts are shown as expected output and replaced by hand-run statements) | <strong>Leaves behind:</strong> schemas <code>CAP_HAND</code>, <code>CAP_FLYWAY</code>, <code>CAP_DCM</code> and clone <code>SBX_DEV_CAP4</code> created and dropped by you; the quiz answered; the teach-back done.</p>
+</blockquote>
+<p>This file adapts the lab template: step-by-step is split into four "ways", and there is a comparison, a decision guide, a quiz and a teach-back.</p>
+<h2 id="1-goal">1. Goal</h2>
+<p>Do the same realistic change request four times, so you feel what each way of working costs and protects:</p>
+<ol>
+<li>hand-run SQL;</li>
+<li>Flyway only;</li>
+<li>DCM only;</li>
+<li>DCM plus Flyway plus the pipeline.</li>
+</ol>
+<p>Then compare them with a matrix, say what you would choose for the calc engine and why, answer a quiz that covers files 03 to 10, and teach the whole picture back.</p>
+<p><strong>The change request</strong> (one ticket, five parts):</p>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td>Add a column <code>CALC_DESCRIPTION VARCHAR(500)</code> to <code>CALCULATIONS</code>.</td>
+</tr>
+<tr>
+<td>b</td>
+<td>Change the body of <code>SP_REGISTER_CALCULATION</code>: trim the name and fill the new column.</td>
+</tr>
+<tr>
+<td>c</td>
+<td>Rename the table <code>FORMULAS</code> to <code>CALC_FORMULAS</code>.</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Add a data fix: give every existing calculation a description (<code>'Legacy calculation ' \|\| CALC_NAME</code>).</td>
+</tr>
+<tr>
+<td>e</td>
+<td>Add a new index <code>IDX_AUDIT_ACTOR</code> on the audit table <code>CALC_AUDIT_EVENT (ACTOR, EVENT_AT)</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Part e needs a hybrid table. In Mode S it is documented as unavailable and you write what you would have run.</p>
+<h2 id="2-why-this-matters-in-calc-engine-and-calc-admin">2. Why this matters in calc-engine and calc-admin</h2>
+<blockquote>
+<p><strong>Real world (NAIC).</strong> The change request is a miniature of normal calc-engine work. Part a and b are engine content: a standard table and a procedure, which the target design gives to DCM. Part c is a rename, which the architecture page calls out explicitly: DCM can read a rename as "remove and add", so a coordinated protocol with an explicit Flyway rename comes first. Part d is a data change, which belongs to Flyway ("ordered, checksum-protected, idempotent where replayable, row-count asserted"). Part e is a hybrid index on a Calc Admin lifecycle table, which DCM cannot define and Flyway owns.</p>
+<p>The architecture decision is that both tools are implemented, each with its own lane, with Terraform for platform objects and a pipeline around them. The DCM project for INT is being re-adopted in roadmap phase 2 ("DCM core re-adoption in INT": an adoption-only plan, unchanged data and grants, an empty re-plan). Flyway boundaries and clone bootstrap are phase 3. A minimal merged-result plan plus a manual INT pipeline is phase 4. This capstone lets you compare the whole design with the simpler alternatives before you form an opinion.</p>
+</blockquote>
+<h2 id="3-prerequisites-and-state-check">3. Prerequisites and state check</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>).</p>
+<pre><code class="language-sql">SHOW SCHEMAS LIKE 'CAP_%' IN DATABASE SBX_INT;           -- CAP_HAND, CAP_FLYWAY, CAP_DCM
+SHOW DATABASES LIKE 'SBX_DEV_%';                         -- 0 rows
+SELECT &quot;version&quot;, &quot;success&quot; FROM SBX_INT.CALC_SUPPORT.FLYWAY_HISTORY_CALC_SUPPORT ORDER BY &quot;installed_rank&quot;;   -- 1 to 5, success
+</code></pre>
+<p>If a <code>CAP_*</code> schema is missing, create it as <code>SYSADMIN</code> and hand it over:</p>
+<pre><code class="language-sql">USE ROLE SYSADMIN;
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_HAND;     -- repeat for CAP_FLYWAY and CAP_DCM
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_HAND TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+</code></pre>
+<p>Keep a notes table to fill after each way: time taken in minutes, number of manual steps, mistakes made, what evidence exists afterwards, how you would undo it.</p>
+<h2 id="4-concepts">4. Concepts</h2>
+<p>Everything here was introduced in earlier labs. The capstone adds two ideas:</p>
+<p><strong>Ownership by change type.</strong> The question is not "which tool is better" but "which tool owns this kind of change". Each of the five parts above has an owner in the full design. You will write that table yourself after way 4.</p>
+<p><strong>Evidence.</strong> After a change, what can you show? A change you cannot show later is a change you cannot audit. Each way leaves a different amount of evidence.</p>
+<h2 id="5-step-by-step">5. Step-by-step</h2>
+<h3 id="step-50-the-common-starting-state">Step 5.0 The common starting state</h3>
+<p>Run in: <strong>Terminal</strong>. Create the file <code>sql/capstone/capstone_seed.sql</code>. It builds the same small engine in whatever schema you select with <code>USE SCHEMA</code>. It is the "before" picture for ways 1 to 3. Way 4 starts from your real repository state instead.</p>
+<pre><code class="language-sql">-- Run after:  USE ROLE SBX_CICD_PIPELINE;  USE WAREHOUSE SBX_CALC_WH;  USE SCHEMA SBX_INT.&lt;CAP_HAND | CAP_FLYWAY | CAP_DCM&gt;;
+CREATE SEQUENCE IF NOT EXISTS SEQ_CALC_ID START = 3001 INCREMENT = 1;
+
+CREATE TABLE IF NOT EXISTS CALCULATIONS (
+  CALC_ID NUMBER(38,0) NOT NULL DEFAULT SEQ_CALC_ID.NEXTVAL,
+  CALC_NAME VARCHAR(255) NOT NULL,
+  CALC_STATUS VARCHAR(10) DEFAULT 'ACTIVE',
+  CREATED_BY VARCHAR(255),
+  PRIMARY KEY (CALC_ID)
+);
+
+CREATE TABLE IF NOT EXISTS FORMULAS (
+  FORMULA_ID NUMBER(38,0) NOT NULL AUTOINCREMENT,
+  CALC_ID NUMBER(38,0),
+  FORMULA_TEXT VARCHAR(4000),
+  PRIMARY KEY (FORMULA_ID)
+);
+
+CREATE OR REPLACE PROCEDURE SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE v_id NUMBER;
+BEGIN
+  SELECT SEQ_CALC_ID.NEXTVAL INTO :v_id;
+  INSERT INTO CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY)
+  SELECT :v_id, :P_CALC_NAME, 'DRAFT', :P_USER;
+  RETURN TO_VARCHAR(:v_id);
+END
+$$;
+
+INSERT INTO CALCULATIONS (CALC_NAME, CALC_STATUS, CREATED_BY)
+VALUES ('CAP_LIFE_RATIO', 'ACTIVE', 'seed'), ('CAP_PROPERTY_TOTAL', 'ACTIVE', 'seed'), ('CAP_HEALTH_RATIO', 'ACTIVE', 'seed');
+INSERT INTO FORMULAS (CALC_ID, FORMULA_TEXT)
+SELECT CALC_ID, 'SUM(' || CALC_NAME || ')' FROM CALCULATIONS;
+
+-- Mode H (hybrid tables): run this statement
+CREATE HYBRID TABLE IF NOT EXISTS CALC_AUDIT_EVENT (
+  EVENT_ID NUMBER(38,0) NOT NULL AUTOINCREMENT,
+  CALC_ID NUMBER(38,0), EVENT_TYPE VARCHAR(40), EVENT_STATUS VARCHAR(10),
+  ACTOR VARCHAR(255), EVENT_AT TIMESTAMP_NTZ,
+  PRIMARY KEY (EVENT_ID)
+);
+-- Mode S (no hybrid): run this one instead (a standard stand-in, key not enforced)
+-- CREATE TABLE IF NOT EXISTS CALC_AUDIT_EVENT ( ...same columns... );
+
+INSERT INTO CALC_AUDIT_EVENT (CALC_ID, EVENT_TYPE, EVENT_STATUS, ACTOR, EVENT_AT)
+SELECT CALC_ID, 'CREATE', 'COMPLETE', 'seed', CURRENT_TIMESTAMP() FROM CALCULATIONS;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-11-01]:</strong> That <code>AUTOINCREMENT</code> in a column list with <code>NOT NULL</code> and an out-of-line <code>PRIMARY KEY</code> is accepted on a hybrid table in the order written above. The create-table grammar allows both. How to check at lab time: run the seed in <code>CAP_HAND</code>. If the hybrid statement fails, copy the error into file 13 and switch that schema to the Mode S statement. Record the result in file 13.</p>
+</blockquote>
+<p>Run the seed in <code>CAP_HAND</code> now (worksheet, set <code>USE SCHEMA SBX_INT.CAP_HAND</code> first). You should see 3 rows in <code>CALCULATIONS</code> (ids 3001 to 3003), 3 formulas, and 3 audit events. You will run it in the other two schemas just before ways 2 and 3.</p>
+<p>Mode S: also remember that <code>PRIMARY KEY</code> on the standard stand-in is not enforced.</p>
+<h3 id="step-51-way-1-hand-run-sql-about-20-minutes">Step 5.1 Way 1: hand-run SQL (about 20 minutes)</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>, role <code>SBX_CICD_PIPELINE</code>, <code>USE SCHEMA SBX_INT.CAP_HAND</code>. Start a stopwatch.</p>
+<pre><code class="language-sql">-- a. add the column
+ALTER TABLE CALCULATIONS ADD COLUMN CALC_DESCRIPTION VARCHAR(500);
+
+-- b. change the procedure (silent overwrite of the old version)
+CREATE OR REPLACE PROCEDURE SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE v_id NUMBER;
+BEGIN
+  SELECT SEQ_CALC_ID.NEXTVAL INTO :v_id;
+  INSERT INTO CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY, CALC_DESCRIPTION)
+  SELECT :v_id, TRIM(:P_CALC_NAME), 'DRAFT', :P_USER, 'Registered via SP_REGISTER_CALCULATION';
+  RETURN TO_VARCHAR(:v_id);
+END
+$$;
+
+-- c. rename
+ALTER TABLE FORMULAS RENAME TO CALC_FORMULAS;
+
+-- d. data fix: nothing counts the rows for you
+UPDATE CALCULATIONS SET CALC_DESCRIPTION = 'Legacy calculation ' || CALC_NAME WHERE CALC_DESCRIPTION IS NULL;
+
+-- e. index (Mode H only)
+CREATE INDEX IDX_AUDIT_ACTOR ON CALC_AUDIT_EVENT (ACTOR, EVENT_AT);
+</code></pre>
+<p>You should see: every statement succeeds, the update reports 3 rows.</p>
+<p>Now check the result and the evidence:</p>
+<pre><code class="language-sql">SELECT CALC_ID, CALC_NAME, CALC_DESCRIPTION FROM CALCULATIONS ORDER BY CALC_ID;
+SHOW INDEXES IN TABLE CALC_AUDIT_EVENT;                  -- Mode H
+SELECT QUERY_TEXT, START_TIME FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_USER(RESULT_LIMIT =&gt; 20)) ORDER BY START_TIME DESC;
+</code></pre>
+<p>Write in your notes: how long it took, what proof you can show tomorrow that this happened (only query history, which is not designed as an audit trail and has limited retention), whether anyone can tell a hand edit from an official change, and how you would undo the rename and the data fix.</p>
+<p>Mistake to try in 30 seconds: switch to <code>USE SCHEMA SBX_INT.CAP_FLYWAY</code>, run statement b again, and notice that nothing stops you. If that schema already has its own procedure, you just overwrote it. If it has none, you just created a stray copy. Neither is reported anywhere. That is what "no tool" means. Switch back and drop the stray copy: <code>DROP PROCEDURE IF EXISTS SBX_INT.CAP_FLYWAY.SP_REGISTER_CALCULATION(VARCHAR, VARCHAR);</code> before way 2 (way 2 seeds the schema itself).</p>
+<h3 id="step-52-way-2-flyway-only-about-40-minutes">Step 5.2 Way 2: Flyway only (about 40 minutes)</h3>
+<p>Run in: <strong>Snowsight worksheet</strong>: <code>USE SCHEMA SBX_INT.CAP_FLYWAY;</code> then run <code>sql/capstone/capstone_seed.sql</code>. This is the schema Flyway will adopt, as in the Lab 2 baseline.</p>
+<p>Run in: <strong>Terminal</strong>. Create a small separate Flyway project. (New name, a helper of this capstone: <code>flyway/capstone_flyway/</code>.)</p>
+<p><code>flyway/capstone_flyway/flyway.toml</code>:</p>
+<pre><code class="language-toml">[environments.target]
+url = &quot;jdbc:snowflake://&lt;ACCOUNT_IDENTIFIER&gt;.snowflakecomputing.com/?db=SBX_INT&amp;warehouse=SBX_CALC_WH&amp;role=SBX_CICD_PIPELINE&quot;
+user = &quot;SBX_SVC_CICD&quot;
+
+[flyway]
+environment = &quot;target&quot;
+locations = [&quot;filesystem:migrations&quot;]
+defaultSchema = &quot;CAP_FLYWAY&quot;
+schemas = [&quot;CAP_FLYWAY&quot;]
+table = &quot;FLYWAY_HISTORY_CAP_FLYWAY&quot;
+baselineVersion = &quot;1&quot;
+cleanDisabled = true
+validateOnMigrate = true
+outOfOrder = false
+</code></pre>
+<p>Migrations in <code>flyway/capstone_flyway/migrations/</code>:</p>
+<p><code>V2__add_calc_description.sql</code></p>
+<pre><code class="language-sql">ALTER TABLE CALCULATIONS ADD COLUMN CALC_DESCRIPTION VARCHAR(500);
+</code></pre>
+<p><code>V3__rename_formulas_to_calc_formulas.sql</code></p>
+<pre><code class="language-sql">ALTER TABLE FORMULAS RENAME TO CALC_FORMULAS;
+</code></pre>
+<p><code>V4__backfill_calc_description.sql</code> (data fix with an assertion: the number of rows updated must equal the number counted as pending, and none may remain):</p>
+<pre><code class="language-sql">EXECUTE IMMEDIATE $$
+DECLARE
+  pending NUMBER; updated NUMBER; remaining NUMBER;
+  e_assert EXCEPTION (-20020, 'data fix assertion failed');
+BEGIN
+  BEGIN TRANSACTION;
+  SELECT COUNT(*) INTO :pending FROM CALCULATIONS WHERE CALC_DESCRIPTION IS NULL;
+  UPDATE CALCULATIONS SET CALC_DESCRIPTION = 'Legacy calculation ' || CALC_NAME WHERE CALC_DESCRIPTION IS NULL;
+  updated := SQLROWCOUNT;
+  SELECT COUNT(*) INTO :remaining FROM CALCULATIONS WHERE CALC_DESCRIPTION IS NULL;
+  IF (updated &lt;&gt; pending OR remaining &lt;&gt; 0) THEN
+    ROLLBACK;
+    RAISE e_assert;
+  END IF;
+  COMMIT;
+  RETURN 'rows updated: ' || updated;
+END;
+$$;
+</code></pre>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G08]:</strong> Whether Flyway 13.12.2 parses a <code>$$ ... $$</code> Snowflake Scripting block that contains semicolons as one statement. How to check at lab time: run <code>flyway migrate</code> and read the error, if any. Fallback from the contract: two plain statements (the <code>UPDATE</code>, then a <code>SELECT</code> that checks <code>COUNT(*)</code>). Record the result in file 13.</p>
+</blockquote>
+<p><code>V5__add_audit_actor_index.sql</code> (Mode H):</p>
+<pre><code class="language-sql">CREATE INDEX IDX_AUDIT_ACTOR ON CALC_AUDIT_EVENT (ACTOR, EVENT_AT);
+</code></pre>
+<p>In Mode S write a no-op instead: <code>SELECT 1;</code> with a comment that the stand-in has no secondary index.</p>
+<p><code>R__sp_register_calculation.sql</code> (a repeatable migration: the whole procedure is rewritten and re-applied when its text changes):</p>
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE v_id NUMBER;
+BEGIN
+  SELECT SEQ_CALC_ID.NEXTVAL INTO :v_id;
+  INSERT INTO CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY, CALC_DESCRIPTION)
+  SELECT :v_id, TRIM(:P_CALC_NAME), 'DRAFT', :P_USER, 'Registered via SP_REGISTER_CALCULATION';
+  RETURN TO_VARCHAR(:v_id);
+END
+$$;
+</code></pre>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code class="language-bash">cd flyway/capstone_flyway
+set -a; source ../.env.flyway; set +a
+export FLYWAY_LOCATIONS=&quot;filesystem:migrations&quot;            # the shared env file points elsewhere
+flyway baseline -baselineVersion=1 -baselineDescription=&quot;capstone seed state&quot;
+flyway info
+flyway migrate
+flyway info
+</code></pre>
+<p>You should see: <code>baseline</code> writes version 1 as the baseline. <code>info</code> lists versions 2 to 5 and the repeatable as pending. <code>migrate</code> applies them in order, repeatables last. The second <code>info</code> shows all <code>Success</code>.</p>
+<p>Check the data:</p>
+<pre><code class="language-sql">USE SCHEMA SBX_INT.CAP_FLYWAY;
+SELECT CALC_ID, CALC_NAME, CALC_DESCRIPTION FROM CALCULATIONS ORDER BY CALC_ID;
+SELECT * FROM FLYWAY_HISTORY_CAP_FLYWAY ORDER BY 1;
+</code></pre>
+<p>Now test the limits you learned in Lab 2:</p>
+<ol>
+<li><strong>Preview.</strong> Before <code>migrate</code>, was there any way to see what the five files would change in the database, without running them? (No dry run in Community.)</li>
+<li><strong>Drift.</strong> In a worksheet run <code>ALTER TABLE CALC_FORMULAS ADD COLUMN SNEAKY VARCHAR;</code> then <code>flyway validate</code>. It passes. Remove the column again.</li>
+<li><strong>Rollback.</strong> Undo version 3. Community has no undo. You would write a new migration that renames back.</li>
+</ol>
+<p>Write in your notes: time, what evidence remains (the history table: version, description, user, time, checksum, success), what you could not see before running, and how the procedure change was handled (the whole file is replaced, there is no per-line diff).</p>
+<h3 id="step-53-way-3-dcm-only-about-50-minutes">Step 5.3 Way 3: DCM only (about 50 minutes)</h3>
+<p>Mode D only. In Mode D-off, read this section and the "You should see" blocks, then do the same changes by hand as in way 1 and compare in your notes.</p>
+<p>Run in: <strong>Snowsight worksheet</strong>: <code>USE SCHEMA SBX_INT.CAP_DCM;</code> then run <code>sql/capstone/capstone_seed.sql</code>.</p>
+<p>Run in: <strong>Terminal</strong>. Create a separate DCM project folder (new names, helpers of this capstone): <code>dcm/capstone/</code> with a manifest and definitions. Grant the right to create a project object first:</p>
+<pre><code class="language-sql">-- Snowsight, role SBX_CICD_PIPELINE (owner of the schema; the explicit grant is only to make the privilege visible)
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.CAP_DCM TO ROLE SBX_CICD_PIPELINE;
+</code></pre>
+<p><code>dcm/capstone/manifest.yml</code>:</p>
+<pre><code class="language-yaml">manifest_version: 2
+type: DCM_PROJECT
+default_target: 'CAP'
+targets:
+  CAP:
+    account_identifier: &lt;ACCOUNT_IDENTIFIER&gt;
+    project_name: 'SBX_INT.CAP_DCM.CAP_DCM_PROJECT'
+    project_owner: SBX_CICD_PIPELINE
+</code></pre>
+<p><code>dcm/capstone/sources/definitions/SEQ_CALC_ID.sql</code>:</p>
+<pre><code class="language-sql">DEFINE SEQUENCE SBX_INT.CAP_DCM.SEQ_CALC_ID start with 3001 increment by 1 noorder;
+</code></pre>
+<p><code>dcm/capstone/sources/definitions/CALCULATIONS.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE SBX_INT.CAP_DCM.CALCULATIONS (
+  CALC_ID NUMBER(38,0) NOT NULL DEFAULT SBX_INT.CAP_DCM.SEQ_CALC_ID.NEXTVAL,
+  CALC_NAME VARCHAR(255) NOT NULL,
+  CALC_STATUS VARCHAR(10) DEFAULT 'ACTIVE',
+  CREATED_BY VARCHAR(255),
+  primary key (CALC_ID)
+);
+</code></pre>
+<p><code>dcm/capstone/sources/definitions/FORMULAS.sql</code>:</p>
+<pre><code class="language-sql">DEFINE TABLE SBX_INT.CAP_DCM.FORMULAS (
+  FORMULA_ID NUMBER(38,0) NOT NULL autoincrement start 1 increment 1 noorder,
+  CALC_ID NUMBER(38,0),
+  FORMULA_TEXT VARCHAR(4000),
+  primary key (FORMULA_ID)
+);
+</code></pre>
+<p><code>dcm/capstone/sources/definitions/SP_REGISTER_CALCULATION.sql</code> (the v1 body from the seed, in <code>DEFINE</code> form):</p>
+<pre><code class="language-sql">DEFINE PROCEDURE SBX_INT.CAP_DCM.SP_REGISTER_CALCULATION(P_CALC_NAME VARCHAR, P_USER VARCHAR)
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER
+AS
+$$
+DECLARE v_id NUMBER;
+BEGIN
+  SELECT SEQ_CALC_ID.NEXTVAL INTO :v_id;
+  INSERT INTO CALCULATIONS (CALC_ID, CALC_NAME, CALC_STATUS, CREATED_BY)
+  SELECT :v_id, :P_CALC_NAME, 'DRAFT', :P_USER;
+  RETURN TO_VARCHAR(:v_id);
+END
+$$;
+</code></pre>
+<p>Not defined, on purpose: <code>CALC_AUDIT_EVENT</code>. DCM does not list hybrid tables as supported.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G03]:</strong> Exact <code>DEFINE SEQUENCE</code>, <code>DEFINE TABLE</code> and <code>DEFINE PROCEDURE</code> grammar. The shapes above come from the working NAIC branch and the public <code>DEFINE TABLE</code> example. How to check at lab time: the supported-entities page and <code>snow init --template dcm_project</code>. Record the result in file 13.</p>
+</blockquote>
+<p>Create the project, adopt, and read the plan, as in Lab 3:</p>
+<pre><code class="language-bash">snow dcm create SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE
+snow dcm plan   SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+</code></pre>
+<p>You should see: a plan of adoption alters for the four objects. If a table definition differs from the live table in a detail, the plan shows an <code>ALTER</code> that is not just adoption. Read it and adjust the definition until the plan matches what Lab 3 taught you to expect. Then deploy with an alias and re-plan until empty:</p>
+<pre><code class="language-bash">snow dcm deploy SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --alias &quot;cap-adopt&quot;
+snow dcm plan   SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+</code></pre>
+<p>Now apply the change request.</p>
+<p><strong>a and b.</strong> Edit <code>CALCULATIONS.sql</code>: add <code>CALC_DESCRIPTION VARCHAR(500),</code> as the <strong>last</strong> column before the <code>primary key</code> line (reordering columns is not supported). Edit <code>SP_REGISTER_CALCULATION.sql</code>: use <code>TRIM(:P_CALC_NAME)</code> and add the description column and value, as in way 1.</p>
+<p><strong>c, the unsafe way first.</strong> Delete <code>FORMULAS.sql</code>. Create <code>CALC_FORMULAS.sql</code> with the same columns and the new name. Plan:</p>
+<pre><code class="language-bash">snow dcm plan SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+python3 scripts/check_plan_for_drops.py dcm/capstone/out/plan*.json
+</code></pre>
+<p>You should see: a <code>DROP</code> of <code>FORMULAS</code> and a <code>CREATE</code> of <code>CALC_FORMULAS</code>, and <code>check_plan_for_drops.py</code> exits 1. Deploying this would lose the three formula rows.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-G06]:</strong> That DCM reads a renamed definition as drop plus create. The docs do not describe renames at all, and the architecture page calls it the "unsafe remove/add interpretation". How to check at lab time: the plan output above. Record the result in file 13.</p>
+</blockquote>
+<p><strong>c, the way that works.</strong> DCM alone has no rename. Do it by hand first, outside DCM, then plan again:</p>
+<pre><code class="language-sql">-- Snowsight, role SBX_CICD_PIPELINE
+ALTER TABLE SBX_INT.CAP_DCM.FORMULAS RENAME TO CALC_FORMULAS;
+</code></pre>
+<pre><code class="language-bash">snow dcm plan SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+python3 scripts/check_plan_for_drops.py dcm/capstone/out/plan*.json
+</code></pre>
+<p>You should see: no drop of the data-bearing table. Read what the plan now says about <code>FORMULAS</code> and <code>CALC_FORMULAS</code>. Do not predict it: this is the question the experiment answers (the old managed entity no longer exists, and the new table has a definition). Write down exactly what it listed.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-11-02]:</strong> What the plan lists after a hand-run rename (the old entity disappears, the new table is adopted). How to check at lab time: read the plan. If it still contains a <code>DROP</code> of a data-bearing table, stop and do not deploy. Record the result in file 13.</p>
+</blockquote>
+<p>Deploy only after the plan has no drop of a table with data:</p>
+<pre><code class="language-bash">snow dcm deploy SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --alias &quot;cap-change&quot;
+snow dcm plan   SBX_INT.CAP_DCM.CAP_DCM_PROJECT --target CAP --from dcm/capstone -c sbx_owner --role SBX_CICD_PIPELINE --save-output
+</code></pre>
+<p>You should see: one deployment in <code>SHOW DEPLOYMENTS IN DCM PROJECT SBX_INT.CAP_DCM.CAP_DCM_PROJECT</code>, and an empty re-plan.</p>
+<p><strong>d and e, outside DCM.</strong> DCM cannot run row changes and cannot define a hybrid index. Do both by hand:</p>
+<pre><code class="language-sql">USE SCHEMA SBX_INT.CAP_DCM;
+UPDATE CALCULATIONS SET CALC_DESCRIPTION = 'Legacy calculation ' || CALC_NAME WHERE CALC_DESCRIPTION IS NULL;
+CREATE INDEX IDX_AUDIT_ACTOR ON CALC_AUDIT_EVENT (ACTOR, EVENT_AT);     -- Mode H
+</code></pre>
+<p>Write in your notes: time; what DCM gave you (a preview plan, an empty re-plan, deployment history with an alias); what it could not do (rename safely, data, hybrid index, so two of the five parts left no record in any tool); and the rollback story (<code>FROM DEPLOYMENT</code> can re-deploy older definitions, but not data).</p>
+<blockquote>
+<p><strong>VERIFIED:</strong> DCM supports tables, sequences, procedures and grants; hybrid tables, users, integrations and resource monitors are not in the supported-entities list; <code>FROM DEPLOYMENT</code> re-plans or re-deploys a previous deployment's rendered definitions (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities and .../dcm-projects-use, read 2026-11-16).</p>
+</blockquote>
+<h3 id="step-54-way-4-dcm-flyway-and-the-pipeline-about-70-minutes">Step 5.4 Way 4: DCM, Flyway and the pipeline (about 70 minutes)</h3>
+<p>This is the design NAIC is building. You work on a private clone of INT, in a branch, with each part owned by one tool.</p>
+<h4 id="541-the-ownership-map-for-this-change">5.4.1 The ownership map for this change</h4>
+<p>Fill the "tool" column before you start, then compare with the answer table in step 5.6.</p>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Change</th>
+<th>Tool that owns it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td>add column to <code>CALCULATIONS</code></td>
+<td>?</td>
+</tr>
+<tr>
+<td>b</td>
+<td>change <code>SP_REGISTER_CALCULATION</code> body</td>
+<td>?</td>
+</tr>
+<tr>
+<td>c</td>
+<td>rename <code>FORMULAS</code> to <code>CALC_FORMULAS</code></td>
+<td>?</td>
+</tr>
+<tr>
+<td>d</td>
+<td>backfill descriptions</td>
+<td>?</td>
+</tr>
+<tr>
+<td>e</td>
+<td>index <code>IDX_AUDIT_ACTOR</code> on the hybrid <code>CALC_AUDIT_EVENT</code></td>
+<td>?</td>
+</tr>
+</tbody>
+</table>
+<h4 id="542-make-the-clone-and-the-branch">5.4.2 Make the clone and the branch</h4>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code class="language-bash">scripts/refresh_dev_clone.sh CAP4 --yes
+git switch -c feature/CAP4
+</code></pre>
+<p>You run git yourself. You should see the clone <code>SBX_DEV_CAP4</code> with an empty re-plan at the end of the script.</p>
+<h4 id="543-edit-the-dcm-definitions-parts-a-b-c">5.4.3 Edit the DCM definitions (parts a, b, c)</h4>
+<p>Run in: <strong>Terminal</strong> (editor). Paths are in <code>dcm/calc_engine/sources/definitions/</code>.</p>
+<ol>
+<li><code>tables/CALCULATIONS.sql</code>: add <code>CALC_DESCRIPTION VARCHAR(500),</code> as the <strong>last</strong> column, before the <code>primary key</code> line.</li>
+<li><code>procedures/SP_REGISTER_CALCULATION.sql</code>: change the name expression to <code>TRIM(:P_CALC_NAME)</code> and add the <code>CALC_DESCRIPTION</code> column and its value <code>'Registered via SP_REGISTER_CALCULATION'</code> to the insert. Keep the rest of the body as Lab 3 left it.</li>
+<li><code>tables/FORMULAS.sql</code>: rename the file to <code>CALC_FORMULAS.sql</code> and change the name inside the <code>DEFINE TABLE</code> line.</li>
+<li><code>grants/access.sql</code>: replace <code>FORMULAS</code> with <code>CALC_FORMULAS</code> in the grants.</li>
+</ol>
+<p>(In Mode D-off skip this step and keep a list of what you would change.)</p>
+<h4 id="544-write-the-flyway-migrations-parts-c-d-e">5.4.4 Write the Flyway migrations (parts c, d, e)</h4>
+<p>Run in: <strong>Terminal</strong>. Files in <code>flyway/migrations/</code>:</p>
+<p><code>common/V6__rename_formulas_to_calc_formulas.sql</code></p>
+<pre><code class="language-sql">ALTER TABLE IF EXISTS FORMULAS RENAME TO CALC_FORMULAS;
+</code></pre>
+<p>The <code>IF EXISTS</code> form makes the file safe on a brand-new environment, where DCM has already created <code>CALC_FORMULAS</code> and <code>FORMULAS</code> never existed. That is the lesson of TC-08-04 in Lab 6.</p>
+<blockquote>
+<p><strong>TO-CONFIRM [TC-11-03]:</strong> That <code>ALTER TABLE IF EXISTS ... RENAME TO</code> is a no-op when the table is missing. The syntax is standard Snowflake <code>ALTER TABLE</code>. How to check at lab time: run it in a worksheet against a name that does not exist. Record the result in file 13.</p>
+</blockquote>
+<p><code>common/V7__backfill_calc_description.sql</code> (this one writes the ledger row the pack's pattern asks for, and asserts against the <strong>pending count</strong>, so it also works in an environment with different rows. Compare with <code>V3</code> of Lab 4, which used a constant <code>EXPECTED_ROWS</code>):</p>
+<pre><code class="language-sql">EXECUTE IMMEDIATE $$
+DECLARE
+  pending NUMBER; updated NUMBER; remaining NUMBER;
+  e_assert EXCEPTION (-20021, 'V7 assertion failed');
+BEGIN
+  BEGIN TRANSACTION;
+  SELECT COUNT(*) INTO :pending FROM CALCULATIONS WHERE CALC_DESCRIPTION IS NULL;
+  UPDATE CALCULATIONS SET CALC_DESCRIPTION = 'Legacy calculation ' || CALC_NAME WHERE CALC_DESCRIPTION IS NULL;
+  updated := SQLROWCOUNT;
+  SELECT COUNT(*) INTO :remaining FROM CALCULATIONS WHERE CALC_DESCRIPTION IS NULL;
+  IF (updated &lt;&gt; pending OR remaining &lt;&gt; 0) THEN
+    ROLLBACK;
+    RAISE e_assert;
+  END IF;
+  INSERT INTO DATA_CHANGE_LOG (CHANGE_VERSION, DESCRIPTION, EXPECTED_ROWS, ROWS_AFFECTED)
+  SELECT '7', 'backfill CALC_DESCRIPTION', :pending, :updated;
+  COMMIT;
+  RETURN 'rows updated: ' || updated;
+END;
+$$;
+</code></pre>
+<p><code>hybrid/V8__add_audit_actor_index.sql</code></p>
+<pre><code class="language-sql">CREATE INDEX IDX_AUDIT_ACTOR ON CALC_AUDIT_EVENT (ACTOR, EVENT_AT);
+</code></pre>
+<p><code>standard/V8__add_audit_actor_index.sql</code> (Mode S, a documented no-op)</p>
+<pre><code class="language-sql">-- Mode S stand-in: no secondary indexes on standard tables. Keeps version numbers aligned with Mode H.
+SELECT 1;
+</code></pre>
+<p>Tell the pipeline that version 6 is a prerequisite of the DCM step. Put the number in the file <code>flyway/PRE_DCM_TARGET</code>:</p>
+<pre><code>6
+</code></pre>
+<h4 id="545-run-it-by-hand-on-the-clone-in-the-right-order">5.4.5 Run it by hand on the clone, in the right order</h4>
+<p>Run in: <strong>Terminal</strong>. Use the helpers from Lab 8 (<code>dplan</code>, <code>ddeploy</code>, <code>flyclone</code>), but point them at the new clone first:</p>
+<pre><code class="language-bash">export CLONE_DB=SBX_DEV_CAP4
+export PROJECT=&quot;$CLONE_DB.CALC_SUPPORT.CALC_ENGINE_DCM&quot;
+</code></pre>
+<p><strong>Step A. See the unsafe plan first</strong> (protocol step 2: plan against the pre-migration state):</p>
+<pre><code class="language-bash">dplan
+python3 scripts/check_plan_for_drops.py dcm/calc_engine/out/plan*.json; echo &quot;exit: $?&quot;
+</code></pre>
+<p>You should see: a <code>DROP</code> of <code>FORMULAS</code> and a <code>CREATE</code> of <code>CALC_FORMULAS</code>. The drop check exits 1. This is the unsafe interpretation. Do not deploy.</p>
+<p><strong>Step B. Prerequisite migration: the explicit rename</strong> (Flyway first):</p>
+<pre><code class="language-bash">flyclone info
+flyclone migrate -target=6
+</code></pre>
+<p>You should see: version 6 applied, versions 7 and 8 still pending. (<code>-target</code> is TC-08-06.) The table was renamed with its rows, its grants and its ownership unchanged.</p>
+<p><strong>Step C. Plan against the final definitions.</strong></p>
+<pre><code class="language-bash">dplan
+python3 scripts/check_plan_for_drops.py dcm/calc_engine/out/plan*.json; echo &quot;exit: $?&quot;
+</code></pre>
+<p>You should see: no <code>DROP</code> of a data-bearing table, and exit 0. Read every entry: the new column, the procedure body, and the adoption of the renamed table. Any unexpected create or drop is a reason to stop.</p>
+<p><strong>Step D. Deploy the definitions.</strong></p>
+<pre><code class="language-bash">ddeploy --alias &quot;cap4-defs&quot;
+</code></pre>
+<p><strong>Step E. Remaining migrations: data fix and index</strong> (they need the new column and the hybrid table):</p>
+<pre><code class="language-bash">flyclone migrate
+flyclone info
+</code></pre>
+<p>You should see: versions 7 and 8 applied.</p>
+<p><strong>Step F. Empty re-plan and smoke test.</strong></p>
+<pre><code class="language-bash">dplan
+python3 scripts/assert_plan_empty.py dcm/calc_engine/out/plan*.json
+</code></pre>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CALC_DEV</code>):</p>
+<pre><code class="language-sql">CALL SBX_DEV_CAP4.CALC_SUPPORT.SP_REGISTER_CALCULATION('  CAP4_SMOKE  ', 'dheeraj');
+SELECT CALC_ID, CALC_NAME, CALC_DESCRIPTION FROM SBX_DEV_CAP4.CALC_SUPPORT.CALCULATIONS ORDER BY CALC_ID DESC LIMIT 5;
+SELECT * FROM SBX_DEV_CAP4.CALC_SUPPORT.DATA_CHANGE_LOG ORDER BY CHANGE_ID DESC LIMIT 1;
+SHOW INDEXES IN TABLE SBX_DEV_CAP4.CALC_SUPPORT.CALC_AUDIT_EVENT;      -- Mode H
+</code></pre>
+<p>You should see: the new calculation has the trimmed name <code>CAP4_SMOKE</code> and the description from the procedure; all older rows have <code>Legacy calculation ...</code>; the ledger shows version 7 with <code>EXPECTED_ROWS</code> equal to <code>ROWS_AFFECTED</code>; the hybrid index <code>IDX_AUDIT_ACTOR</code> is <code>ACTIVE</code>. The re-plan is empty.</p>
+<p>Zero writes to INT: run the two count queries from Lab 5 or Lab 8 (drill 7) and compare with your baseline.</p>
+<blockquote>
+<p><strong>Design reference (NAIC, not a public doc):</strong> The architecture page <code>calc-engine-complete-architecture.html</code>, section 7, defines a six-step coordinated rename protocol: review the explicit rename and the final definition in one change; full plan against the pre-migration state and verify the unsafe remove-and-add interpretation; capture backups, consumers, owners, grants, row counts and fingerprints; apply the explicit rename through Flyway without transferring ownership; new full plan against the final definition and reject unexpected creates or drops; deploy DCM, require an empty re-plan, and run contract and parity tests. Steps A to F above are the sandbox version of it (step 3, the capture, is the part you do by reading counts and grants before step B).</p>
+</blockquote>
+<h4 id="546-let-the-pipeline-do-the-same">5.4.6 Let the pipeline do the same</h4>
+<p>Run in: <strong>Terminal</strong>:</p>
+<pre><code class="language-bash">git add dcm flyway
+git commit -m &quot;feat: capstone change request on clone&quot;
+git push -u origin feature/CAP4
+</code></pre>
+<p>You run these git commands yourself. Open a pull request in <strong>GitHub UI</strong>. Do not merge it.</p>
+<p>You should see: <code>validate</code> is green, <code>pr-clone-check</code> runs the same steps you just ran by hand (prerequisite migrations because of <code>PRE_DCM_TARGET</code>, plan, drop check, deploy, migrate, empty re-plan, smoke, zero-writes), and the <code>cleanup</code> job drops the pull request clone.</p>
+<p>Close the pull request without merging. Merging would change <code>SBX_INT</code> and move your Lab 7 end state. If you want to see the INT deploy, you can merge, approve <code>int</code>, and later fix forward, but nothing after this file needs it.</p>
+<p>If the pipeline fails in the rename or data fix on a brand-new environment, that is the TC-08-04 finding from Lab 6, and the tolerant <code>IF EXISTS</code> and pending-count forms above are the fix.</p>
+<h4 id="if-you-are-in-mode-s-no-hybrid-tables">If you are in Mode S (no hybrid tables)</h4>
+<p>Use the <code>standard/V8</code> no-op. Part e is documented as unavailable: write one sentence on what you would have lost (an index that speeds lookups by actor) and what the standard table does instead.</p>
+<h4 id="if-dcm-is-not-available-mode-d-off">If DCM is not available (Mode D-off)</h4>
+<p>Apply parts a and b by hand with <code>ALTER TABLE ... ADD COLUMN</code> and <code>CREATE OR REPLACE PROCEDURE</code>, then re-run the grants. Keep Flyway steps B and E. Note in your table that re-grants and the drop check are manual chores now.</p>
+<h3 id="step-55-fill-in-the-notes-table">Step 5.5 Fill in the notes table</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Way 1 hand-run</th>
+<th>Way 2 Flyway</th>
+<th>Way 3 DCM</th>
+<th>Way 4 all + pipeline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Minutes spent</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Manual steps</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Mistakes or surprises</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Could you preview before changing?</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Proof you can show tomorrow</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Could you detect a hand edit?</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>How would you roll back?</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="step-56-ownership-answer-comparison-matrix-and-decision-guide">Step 5.6 Ownership answer, comparison matrix and decision guide</h3>
+<h4 id="the-answer-to-the-ownership-map">The answer to the ownership map</h4>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Change</th>
+<th>Owner in the full design</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td>add column to <code>CALCULATIONS</code></td>
+<td>DCM</td>
+<td>A standard table is a supported entity. The definition is the desired end state, and the plan previews the alter.</td>
+</tr>
+<tr>
+<td>b</td>
+<td>procedure body</td>
+<td>DCM</td>
+<td>Procedures are supported. One definition per object, per-object diff, grants re-applied.</td>
+</tr>
+<tr>
+<td>c</td>
+<td>rename a table</td>
+<td>Flyway first, then the DCM definition</td>
+<td>DCM reads a rename as drop plus create (TC-G06). The explicit rename keeps the rows.</td>
+</tr>
+<tr>
+<td>d</td>
+<td>data fix</td>
+<td>Flyway</td>
+<td>DCM does not handle row data. Flyway gives ordering, a checksum and an assertion.</td>
+</tr>
+<tr>
+<td>e</td>
+<td>hybrid index</td>
+<td>Flyway</td>
+<td>Hybrid tables and indexes are not in DCM's supported list.</td>
+</tr>
+</tbody>
+</table>
+<p>The ordering rules from file 06: a normal change runs DCM plan, review, DCM deploy, Flyway migrate, then a DCM re-plan that must be empty. A rename runs Flyway first, then the DCM definition, then an empty re-plan.</p>
+<h4 id="comparison-matrix">Comparison matrix</h4>
+<p>Fill the "your measure" notes from step 5.5. The text in the cells is what the labs showed.</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>1 Hand-run SQL</th>
+<th>2 Flyway only</th>
+<th>3 DCM only</th>
+<th>4 DCM + Flyway + pipeline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Effort for this change</td>
+<td>Lowest. Five statements, no setup.</td>
+<td>Setup of project and files, then low per change.</td>
+<td>Setup of manifest and definitions, then low per change; three parts need hand work.</td>
+<td>Highest setup (clone, workflows, secrets). Each change then runs the same way.</td>
+</tr>
+<tr>
+<td>Safety against mistakes</td>
+<td>None. Wrong schema or order is silent.</td>
+<td>Ordered and checksummed, but no preview and a half-failed file stays half-applied.</td>
+<td>Plan shows creates, alters and drops. A deploy drops what is undefined.</td>
+<td>Plan plus drop check plus clone test plus empty re-plan plus zero-write check.</td>
+</tr>
+<tr>
+<td>Drift detection</td>
+<td>Hand query only</td>
+<td>None in Community</td>
+<td>Full plan</td>
+<td>DCM objects only; Flyway-owned objects have none</td>
+</tr>
+<tr>
+<td>Audit and evidence</td>
+<td>Query history only</td>
+<td>History table: version, user, time, checksum</td>
+<td>Deployment history with alias</td>
+<td>Both plus Git, pull request, pipeline logs and approvals</td>
+</tr>
+<tr>
+<td>Rollback</td>
+<td>None</td>
+<td>None (fix forward)</td>
+<td>Re-deploy earlier definitions, not data</td>
+<td>Same, plus clones to rehearse and Time Travel for data. No universal rollback.</td>
+</tr>
+<tr>
+<td>Preview</td>
+<td>None</td>
+<td>None (no dry run in Community)</td>
+<td>Yes</td>
+<td>Yes, in the pull request</td>
+</tr>
+<tr>
+<td>Team collaboration</td>
+<td>Overwrites each other</td>
+<td>Version clashes at merge</td>
+<td>One project per developer or ticket</td>
+<td>Clone and project per ticket, reviewed in pull requests</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Nothing extra</td>
+<td>Docker image, tiny compute</td>
+<td>Tiny compute</td>
+<td>Clone storage until data diverges, runner minutes, a warehouse for a few minutes per run</td>
+</tr>
+<tr>
+<td>Learning curve</td>
+<td>Lowest</td>
+<td>Low</td>
+<td>Medium (templating, plan reading, ownership)</td>
+<td>Highest (all of it plus CI, secrets, identity)</td>
+</tr>
+<tr>
+<td>Handles all five parts?</td>
+<td>Yes, with no protection</td>
+<td>Mostly; procedure is a whole-file replace</td>
+<td>Parts a and b only (c is unsafe, d and e impossible)</td>
+<td>Yes, each by its owner</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>VERIFIED:</strong> Flyway Community has no undo, no dry run and no drift check; DCM plan compares definitions with live state and DEPLOY drops what is no longer defined; hybrid tables are not in the DCM supported list (sources as in files 04 and 05, read 2026-11-16).</p>
+</blockquote>
+<h4 id="decision-guide-what-would-you-choose-for-the-calc-engine-and-why">Decision guide: what would you choose for the calc engine, and why</h4>
+<p>The calc engine has these properties, in the order that matters:</p>
+<ol>
+<li><strong>Most of the code is procedures and standard tables</strong> (34 procedures, 5 functions, 24 tables in INT at the last count). The old way pasted a 6,700-line file by hand and silently overwrote newer versions. Per-object definitions with a plan are what that problem needs. That is DCM's lane.</li>
+<li><strong>Some objects are hybrid tables</strong> (Calc Admin lifecycle) and some changes are renames or row changes. Those cannot be DCM. That is Flyway's lane.</li>
+<li><strong>Clones are the test environment</strong>, and they need a procedure that is deployed outside both tools (<code>CREATE_CALC_DEV_CLONE</code>), plus careful handling of the hybrid history trap.</li>
+<li><strong>Environments are many and approvals matter</strong> (INT, QA, PROD with change requests). That needs a pipeline with protected environments and identities that do not travel with developers.</li>
+</ol>
+<p>So the choice is way 4, with explicit ownership. The simpler ways each fit a narrower case:</p>
+<table>
+<thead>
+<tr>
+<th>Way</th>
+<th>Fits when</th>
+<th>Does not fit the calc engine because</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 Hand-run</td>
+<td>A throwaway playground or a one-off investigation</td>
+<td>There is no audit and no protection from the overwrite problem that started this whole effort.</td>
+</tr>
+<tr>
+<td>2 Flyway only</td>
+<td>The platform is mostly tables and data, or the project is on a platform where Flyway is the standard (EDP's <code>FIN_CALCULATION</code>, fpr-admin on PostgreSQL)</td>
+<td>The engine is procedure-heavy. A repeatable file replaces a whole procedure and gives no per-object diff, and there is no drift detection or plan.</td>
+</tr>
+<tr>
+<td>3 DCM only</td>
+<td>A project with only supported objects and no data or hybrid tables</td>
+<td>It cannot own the hybrid pair, the data changes or an explicit rename.</td>
+</tr>
+</tbody>
+</table>
+<p>What way 4 costs and risks, so you can argue the other side:</p>
+<ul>
+<li>More moving parts: two tools, a manifest, a pipeline, secrets or federation, clones. Every extra part can fail (Lab 8).</li>
+<li>Ownership discipline is manual: one tool per object. No tool enforces it today. The NAIC design proposes an ownership file and a check, and the branch does not have one yet.</li>
+<li>Flyway-owned objects have no drift detector in Community.</li>
+<li>The clone procedure and the Flyway-history trap need real attention.</li>
+<li>DEPLOY can do more than the reviewed plan. Pipeline checks reduce that risk, they do not remove it.</li>
+<li>Learning curve and review load for a small team.</li>
+</ul>
+<p>NAIC's chosen path keeps both tools: DCM for supported engine objects (INT re-adoption is roadmap phase 2), Flyway for hybrid tables, renames, data changes, lifecycle schema and clone support (phase 3), Terraform for platform objects, and GitLab pipelines around all of it (phase 4 starts with a minimal merged-result plan and a manual INT pipeline). Your capstone is that design in miniature.</p>
+<blockquote>
+<p><strong>Design reference (NAIC):</strong> Roadmap phases and the ownership split come from <code>calc-engine-complete-architecture.html</code> and <code>calc-engine-pipeline.html</code>. The real GitLab pipeline does not exist yet. This pack's sandbox versions are for learning, not a copy of any NAIC implementation.</p>
+</blockquote>
+<h3 id="step-57-teach-back-30-minutes">Step 5.7 Teach-back (30 minutes)</h3>
+<p>Run in: <strong>a text file or a voice recording</strong>, no tools. Explain the following in your own words, as if to a teammate who knows SQL but has never seen DCM or Flyway. Aim for about five minutes.</p>
+<ol>
+<li>Why do we need these tools at all? Describe the old way and one concrete way it failed.</li>
+<li>What does DCM do, in one sentence, and what is the single most dangerous thing it does?</li>
+<li>What does Flyway do, in one sentence, and why can it not roll back on Snowflake?</li>
+<li>Which tool owns which object, and what happens when two tools own the same object?</li>
+<li>Walk through a rename change step by step and say why the order matters.</li>
+<li>What is a clone for, what does <code>IGNORE HYBRID TABLES</code> have to do with it, and what is the history trap?</li>
+<li>Why is the application's role not allowed to run migrations?</li>
+<li>Name three things the pipeline checks before a change reaches INT.</li>
+<li>What can still go wrong with all of it in place?</li>
+</ol>
+<p>Self-check: if you needed to look something up for more than two items, redo the matching lab step. Write the lookups in your notes.</p>
+<h2 id="6-checkpoint-questions-the-quiz">6. Checkpoint questions: the quiz</h2>
+<p>Thirty questions cover files 03 to 10. Answers follow. Write your answers first.</p>
+<p><strong>Lab 1: the old way (file 03)</strong></p>
+<ol>
+<li>What does <code>CREATE OR REPLACE PROCEDURE</code> do when a second developer runs a different version of the same procedure?</li>
+<li>Name three pain points of the old way that you wrote down in Lab 1.</li>
+<li>What does the drift detective compare, and what can it not do?</li>
+</ol>
+<p><strong>Lab 2: Flyway fundamentals (file 04)</strong></p>
+<ol start="4">
+<li>What is stored in the Flyway history table, and what does the checksum protect?</li>
+<li>What is the difference between a versioned (<code>V</code>) and a repeatable (<code>R__</code>) migration?</li>
+<li>Why does a migration that fails on its second statement leave the first statement applied on Snowflake?</li>
+<li>What does <code>outOfOrder = false</code> do to a migration numbered below the latest applied version?</li>
+<li>What does <code>baseline</code> do, and when is it safe?</li>
+<li>Why is <code>cleanDisabled</code> true by default, and why is that a good thing?</li>
+</ol>
+<p><strong>Lab 3: DCM fundamentals (file 05)</strong></p>
+<ol start="10">
+<li>What does <code>DEFINE</code> behave like, and what does that mean for a table definition?</li>
+<li>What is the empty re-plan, and what does it prove?</li>
+<li>What happens to a managed object whose definition you delete, then deploy?</li>
+<li>Why does DEPLOY not simply replay the plan you reviewed?</li>
+<li>Name three kinds of objects DCM does not manage.</li>
+<li>What does <code>DROP DCM PROJECT</code> do to the objects and to the deployment history?</li>
+<li>Which privilege lets a role run a plan but not deploy?</li>
+</ol>
+<p><strong>Lab 4: both tools together (file 06)</strong></p>
+<ol start="17">
+<li>Which tool owns hybrid tables, and why not the other?</li>
+<li>A table is renamed. Which comes first, the Flyway rename or the DCM definition change, and why?</li>
+<li>What goes wrong when two tools own the same object?</li>
+<li>What are the parts of the data-change pattern?</li>
+</ol>
+<p><strong>Lab 5: clones (file 07)</strong></p>
+<ol start="21">
+<li>Why does a schema clone containing hybrid tables need <code>IGNORE HYBRID TABLES</code>?</li>
+<li>What is the Flyway-history trap in a clone, and how does the pack fix it?</li>
+<li>Why is the clone procedure <code>EXECUTE AS OWNER</code>, and why does it never take a database name from the caller?</li>
+<li>What does <code>DATA_RETENTION_TIME_IN_DAYS = 0</code> mean for a clone?</li>
+</ol>
+<p><strong>Lab 6: CI/CD (file 08)</strong></p>
+<ol start="25">
+<li>Which GitHub feature replaces GitLab's <code>resource_group</code>, and why is <code>cancel-in-progress</code> false for deploys?</li>
+<li>Why does the pull request job use an environment with no reviewer, and the INT job one with a reviewer?</li>
+<li>What is the safer way to authenticate than a stored private key, and what still needs a key in the sandbox?</li>
+</ol>
+<p><strong>Lab 7: calc-admin lifecycle (file 09)</strong></p>
+<ol start="28">
+<li>Why can the app role insert audit rows but not update or delete them?</li>
+<li>What does event-first auditing leave behind when the process dies mid-way?</li>
+<li>Why does NAIC run Flyway in a pipeline and not at application start?</li>
+</ol>
+<p><strong>Lab 8: failure drills (file 10)</strong></p>
+<ol start="31">
+<li>A migration failed half-way. List the three recovery actions in order.</li>
+<li>Why does a <code>--delta</code> plan not find drift?</li>
+<li>A CI login fails with 390144. What do you do first?</li>
+</ol>
+<h3 id="answers">Answers</h3>
+<ol>
+<li>The last one to run wins, silently. Nothing warns that a newer version was overwritten.</li>
+<li>Any three of: no history of who changed what; hand edits and the Git file disagree (drift); no safe test environment; a newer version overwritten; objects owned by different roles; grants lost after <code>CREATE OR REPLACE</code>; no preview.</li>
+<li>It compares what is in <code>INFORMATION_SCHEMA</code> with what the SQL file says. It can find a difference. It cannot fix it, and it only knows what you queried.</li>
+<li>One row per migration: version, description, type, checksum, who applied it, when, and success. The checksum detects an applied file that was edited later.</li>
+<li>A versioned migration runs once in version order and is never edited after it ran. A repeatable runs after the versioned ones and again whenever its checksum changes.</li>
+<li>Snowflake commits DDL immediately, so Flyway cannot wrap the file in a rollback.</li>
+<li>Flyway ignores it (and <code>validate</code> may complain) instead of applying it late.</li>
+<li>It records "the database is already at version N" without running anything. It is safe only after you verified the live shape equals what the scripts up to N would produce.</li>
+<li><code>clean</code> drops every object in the configured schemas. Disabled by default, it cannot be run by accident in a shared environment.</li>
+<li><code>CREATE OR ALTER</code>. The table definition is the desired end state, and a deploy alters the live table to match it, within the limits of <code>CREATE OR ALTER</code> (for example, columns cannot be reordered).</li>
+<li>A plan whose change set is empty. It proves the live objects match the definitions at that moment.</li>
+<li>DEPLOY drops it, with its rows.</li>
+<li>DEPLOY recomputes a fresh change set against the live state. The live state may have changed since the plan.</li>
+<li>Any three of: hybrid tables, users, integrations, resource monitors, row data, application roles.</li>
+<li>Objects stay in place, now unmanaged. The deployment history artifacts are deleted.</li>
+<li><code>PLAN</code> (on the project object). Deploy needs <code>OWNERSHIP</code>.</li>
+<li>Flyway. Hybrid tables and indexes are not in DCM's supported list.</li>
+<li>The Flyway rename comes first. DCM would otherwise read the new name as drop plus create and lose the rows.</li>
+<li>Each tool tries to make the object match its own idea: one drops what the other created, plans show noise, and results depend on the order of runs.</li>
+<li>Count the rows to change, run an idempotent statement, assert the updated count equals the expected count, write one ledger row, and never edit the file after it ran.</li>
+<li>Hybrid tables cannot be cloned at schema level. Without the clause the clone fails. Database-level clones can copy them physically, at a cost that grows with data size.</li>
+<li>The cloned history says the hybrid migrations already ran, but the hybrid tables were not cloned. The pack recreates the hybrid tables empty from <code>GET_DDL</code>, so history and objects agree.</li>
+<li>The developer role cannot create databases or take ownership. The procedure runs with the owner's rights, and the only caller input is a validated ticket, so a caller cannot make it touch a database it should not.</li>
+<li>No Time Travel, no <code>UNDROP</code>, and lower storage cost. A dropped table in the clone cannot be restored.</li>
+<li><code>concurrency: group</code>. Cancelling a running deploy can leave half of the DDL applied, and Snowflake DDL commits as it goes.</li>
+<li>The pull request job must run without a human click and only touches a throwaway clone. The INT deployment changes a shared environment, so a person must approve it.</li>
+<li>OIDC federation (workload identity), which uses a short-lived token. Flyway still needs a key file, because the Flyway driver page does not list workload identity.</li>
+<li>The grants give it <code>SELECT</code> and <code>INSERT</code> on the audit table only. The procedure writes through the owner's rights.</li>
+<li>A <code>PENDING</code> event with no outcome. It marks the call as indeterminate and in need of reconciling.</li>
+<li>The application credential would need DDL rights, parallel instances would race, a failed migration would block the application, production changes need approved pipelines, and Snowflake DDL cannot be rolled back.</li>
+<li>Drop the leftover objects the failed file created; run <code>repair</code>; fix the never-applied file and migrate again.</li>
+<li>It only evaluates changed definitions and what depends on them, and you changed no definition.</li>
+<li>Get the UUID from the error and ask an administrator for the detailed code (<code>SYSTEM$GET_LOGIN_FAILURE_DETAILS</code>). Then compare fingerprints, clock, account and login name.</li>
+</ol>
+<p>Scoring: 28 or more right means you can explain the design. Fewer than 20 means redo the labs where you missed questions: the question numbers are grouped by lab.</p>
+<h2 id="7-break-it">7. Break it</h2>
+<p>Do way 4 in the wrong order, on purpose, in the clone only.</p>
+<ol>
+<li>Refresh the clone: <code>scripts/refresh_dev_clone.sh CAP4 --yes</code>. Keep the definition edits, delete migration V6 from your working copy (or move it away temporarily).</li>
+<li>Run <code>dplan</code> and see the drop of <code>FORMULAS</code>.</li>
+<li>Run <code>ddeploy</code> anyway, ignoring the drop check.</li>
+<li>Symptom: the deploy succeeds. <code>SELECT COUNT(*) FROM SBX_DEV_CAP4.CALC_SUPPORT.CALC_FORMULAS;</code> returns 0, and <code>FORMULAS</code> does not exist.</li>
+<li>Diagnosis: the three seed formula rows were in <code>FORMULAS</code>. DCM dropped that table and created an empty <code>CALC_FORMULAS</code>. In the clone with retention 0 there is no <code>UNDROP</code>.</li>
+<li>Recovery: refresh the clone, restore V6, do it in the right order. In a real environment the recovery would be a restore from Time Travel or a backup, which is why the protocol puts the explicit rename first.</li>
+</ol>
+<p>Lesson: all the safety was a plan you could read. The tool did what the definitions said.</p>
+<h2 id="8-limitations-seen-in-this-lab">8. Limitations seen in this lab</h2>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Experiment that exposed it</th>
+<th>What covers it</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DCM cannot rename safely</td>
+<td>Way 3 step c</td>
+<td>Flyway rename first, then definition</td>
+<td>TO-CONFIRM (TC-G06, TC-11-02)</td>
+</tr>
+<tr>
+<td>DCM cannot do data changes or hybrid indexes</td>
+<td>Way 3 steps d and e</td>
+<td>Flyway</td>
+<td>VERIFIED (supported-entities list)</td>
+</tr>
+<tr>
+<td>Flyway Community has no preview, drift or rollback</td>
+<td>Way 2</td>
+<td>DCM plan for DCM objects, fix forward</td>
+<td>VERIFIED</td>
+</tr>
+<tr>
+<td>Hand-run SQL leaves no audit</td>
+<td>Way 1</td>
+<td>Any tool plus Git</td>
+<td>VERIFIED (observed)</td>
+</tr>
+<tr>
+<td>Migrations may not replay on new environments</td>
+<td>Way 4 and file 08</td>
+<td>Tolerant forms (<code>IF EXISTS</code>, pending-count assertions)</td>
+<td>TO-CONFIRM (TC-08-04, TC-11-03)</td>
+</tr>
+<tr>
+<td>Hybrid index unavailable in a trial</td>
+<td>Mode S</td>
+<td>Documented no-op</td>
+<td>VERIFIED (docs: trials have no hybrid tables)</td>
+</tr>
+<tr>
+<td>No tool enforces "one owner per object"</td>
+<td>Way 4 map</td>
+<td>A reviewed ownership table, later a check</td>
+<td>VERIFIED (design)</td>
+</tr>
+<tr>
+<td>Parsing <code>$$</code> blocks in Flyway</td>
+<td>Ways 2 and 4</td>
+<td>Two plain statements</td>
+<td>TO-CONFIRM (TC-G08)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9-what-you-learned">9. What you learned</h2>
+<ul>
+<li>The same change costs a few minutes by hand and more setup in the full design, and the extra setup buys preview, order, evidence and a safe test.</li>
+<li>Each kind of change has an owner: columns and procedures belong to DCM, renames, data and hybrid objects belong to Flyway.</li>
+<li>A rename is the clearest case: DCM alone loses data, Flyway alone has no preview, together they work in the right order.</li>
+<li>Every way works until the day it does not. The labs showed the day.</li>
+<li>You can state the trade-offs of the NAIC design and argue both sides.</li>
+</ul>
+<h2 id="10-cleanup">10. Cleanup</h2>
+<p>Run in: <strong>Snowsight worksheet</strong> (role <code>SBX_CICD_PIPELINE</code>):</p>
+<pre><code class="language-sql">CALL SBX_INT.CALC_DEV_SUPPORT.DROP_CALC_DEV_CLONE('CAP4');
+EXECUTE DCM PROJECT SBX_INT.CAP_DCM.CAP_DCM_PROJECT PURGE;       -- non-production only: drops everything the project manages
+DROP DCM PROJECT IF EXISTS SBX_INT.CAP_DCM.CAP_DCM_PROJECT;
+DROP SCHEMA IF EXISTS SBX_INT.CAP_HAND;
+DROP SCHEMA IF EXISTS SBX_INT.CAP_FLYWAY;
+DROP SCHEMA IF EXISTS SBX_INT.CAP_DCM;
+</code></pre>
+<blockquote>
+<p><strong>VERIFIED:</strong> <code>EXECUTE DCM PROJECT &lt;p&gt; PURGE</code> drops everything managed (non-production only), and <code>DROP DCM PROJECT</code> removes the project and its deployment history (https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-manage, read 2026-11-16). Skip the two DCM lines if you used Mode D-off.</p>
+</blockquote>
+<p>Also: close any capstone pull request without merging; delete local branches <code>feature/CAP4</code> and <code>feature/LAB6B</code>, <code>feature/LAB8A</code> if you like (you run git). Remove the folders <code>flyway/capstone_flyway/</code> and <code>dcm/capstone/</code> if you do not want them in the repository, and empty <code>flyway/PRE_DCM_TARGET</code>.</p>
+<p>Drop the schemas last, because they were created by the bootstrap. To redo the capstone, create them again (see section 3).</p>
+<p>Keep: all pack files, the workflows, <code>SBX_INT</code>, <code>SBX_QA</code>, <code>SBX_PROD</code> and the roles.</p>
+<p>When you are done learning for a while, suspend cost: <code>ALTER WAREHOUSE SBX_CALC_WH SUSPEND;</code> as <code>SBX_CICD_PIPELINE</code> or <code>ACCOUNTADMIN</code>, and check the trial balance in Snowsight. The trial lasts 30 days or until the free credits (about $400 of free usage) are used, whichever comes first.</p>
+<h2 id="11-state-left-behind">11. State left behind</h2>
+<p>Schemas <code>CAP_HAND</code>, <code>CAP_FLYWAY</code>, <code>CAP_DCM</code> and clone <code>SBX_DEV_CAP4</code> created and dropped; <code>flyway/PRE_DCM_TARGET</code> empty; the quiz answered; the teach-back done; the notes table filled.</p>
+<h2 id="12-open-items-for-file-13">12. Open items for file 13</h2>
+<p>TC-G03, TC-G06, TC-G08, TC-08-04, TC-08-06, TC-11-01, TC-11-02, TC-11-03.</p>
+<p>New names introduced by this file: folders <code>flyway/capstone_flyway/</code>, <code>dcm/capstone/</code>; DCM project <code>SBX_INT.CAP_DCM.CAP_DCM_PROJECT</code>; Flyway history table <code>FLYWAY_HISTORY_CAP_FLYWAY</code>; migrations <code>V6__rename_formulas_to_calc_formulas.sql</code>, <code>V7__backfill_calc_description.sql</code>, <code>V8__add_audit_actor_index.sql</code> (hybrid and standard) in the main project for way 4.</p>
+<h2 id="13-next">13. Next</h2>
+<p>Use <a href="12-glossary-and-reference.md">the glossary and reference</a> any time. When you finish, fill in <a href="13-open-questions-and-verification-log.md">the open questions and verification log</a>.</p>
+</body></html>

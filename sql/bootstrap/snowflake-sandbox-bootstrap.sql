@@ -1,0 +1,180 @@
+-- =====================================================================
+-- snowflake-sandbox-bootstrap.sql
+-- Sandbox mirror of the NAIC calc-engine layout. Run in YOUR OWN trial
+-- account only. Placeholders: <LEARNER_USER>, <PUBLIC_KEY_BODY>.
+-- No secrets belong in this file.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- PART 1 (SECURITYADMIN): roles and the learner's grants
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+CREATE ROLE IF NOT EXISTS SBX_CICD_PIPELINE      COMMENT = 'Owner and deployer of engine objects (mirrors CICD_PIPELINE)';
+CREATE ROLE IF NOT EXISTS SBX_CALC_DEV           COMMENT = 'Developer role, owns clone objects (mirrors COMMON_INT_CALC_DEV)';
+CREATE ROLE IF NOT EXISTS SBX_FN_CALC_ENGINE_NP  COMMENT = 'Runtime app role, DML only (mirrors FN_NAIC_CALC_ENGINE_NP)';
+CREATE ROLE IF NOT EXISTS SBX_CALC_READER        COMMENT = 'Read-only role';
+
+-- Role hierarchy
+GRANT ROLE SBX_CALC_DEV      TO ROLE SBX_CICD_PIPELINE;  -- lets owner's-rights clone procedures hand objects to the dev role
+GRANT ROLE SBX_CICD_PIPELINE TO ROLE SYSADMIN;           -- lets SYSADMIN drop stray clones
+
+-- The learner holds all four roles (in NAIC developers do not hold the pipeline role)
+GRANT ROLE SBX_CALC_DEV, SBX_CICD_PIPELINE, SBX_FN_CALC_ENGINE_NP, SBX_CALC_READER TO USER <LEARNER_USER>;
+ALTER USER <LEARNER_USER> SET DEFAULT_ROLE = SBX_CALC_DEV;   -- never ACCOUNTADMIN as default
+
+-- ---------------------------------------------------------------------
+-- PART 2 (SYSADMIN): warehouse, databases, schemas  (stands in for Terraform)
+-- ---------------------------------------------------------------------
+USE ROLE SYSADMIN;
+
+CREATE WAREHOUSE IF NOT EXISTS SBX_CALC_WH
+  WAREHOUSE_SIZE      = 'XSMALL'
+  AUTO_SUSPEND        = 60
+  AUTO_RESUME         = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Sandbox warehouse, tiny on purpose';
+
+CREATE DATABASE IF NOT EXISTS SBX_INT      COMMENT = 'Mirrors COMMON_INT';
+CREATE DATABASE IF NOT EXISTS SBX_INT_FIN  COMMENT = 'Mirrors NAIC_INT_FINANCIAL_EDL (results)';
+CREATE DATABASE IF NOT EXISTS SBX_QA       COMMENT = 'Simulated QA';
+CREATE DATABASE IF NOT EXISTS SBX_PROD     COMMENT = 'Simulated PROD';
+
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CALC_SUPPORT;       -- engine objects, DCM project, Flyway history
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CALC_DEV_SUPPORT;   -- clone procedures
+CREATE SCHEMA IF NOT EXISTS SBX_INT.LAB2_SCRATCH;       -- Lab 2 Flyway playground
+CREATE SCHEMA IF NOT EXISTS SBX_INT.LAB3_SCRATCH;       -- Lab 3 DCM drop experiments
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_HAND;           -- capstone way 1
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_FLYWAY;         -- capstone way 2
+CREATE SCHEMA IF NOT EXISTS SBX_INT.CAP_DCM;            -- capstone way 3
+CREATE SCHEMA IF NOT EXISTS SBX_INT_FIN.FIN_CALCULATION;
+CREATE SCHEMA IF NOT EXISTS SBX_QA.CALC_SUPPORT;
+CREATE SCHEMA IF NOT EXISTS SBX_PROD.CALC_SUPPORT;
+
+-- ---------------------------------------------------------------------
+-- PART 3 (ACCOUNTADMIN): resource monitor and one account-level privilege
+-- Only ACCOUNTADMIN may create resource monitors.
+-- The quota of 20 credits is this pack's choice, not a Snowflake default.
+-- ---------------------------------------------------------------------
+USE ROLE ACCOUNTADMIN;
+
+CREATE OR REPLACE RESOURCE MONITOR SBX_CALC_RM WITH
+  CREDIT_QUOTA    = 20
+  FREQUENCY       = MONTHLY
+  START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 50  PERCENT DO NOTIFY
+           ON 80  PERCENT DO NOTIFY
+           ON 90  PERCENT DO SUSPEND
+           ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+
+ALTER WAREHOUSE SBX_CALC_WH SET RESOURCE_MONITOR = SBX_CALC_RM;
+
+-- The clone procedure (owned by the pipeline role) creates databases
+GRANT CREATE DATABASE ON ACCOUNT TO ROLE SBX_CICD_PIPELINE;
+
+-- ---------------------------------------------------------------------
+-- PART 4 (SECURITYADMIN): ownership of schemas and container grants
+-- Databases stay owned by SYSADMIN. Schemas go to the pipeline role.
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CALC_SUPPORT      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CALC_DEV_SUPPORT  TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.LAB2_SCRATCH      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.LAB3_SCRATCH      TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_HAND          TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_FLYWAY        TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT.CAP_DCM           TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_QA.CALC_SUPPORT       TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON SCHEMA SBX_PROD.CALC_SUPPORT     TO ROLE SBX_CICD_PIPELINE COPY CURRENT GRANTS;
+
+-- Pipeline role: warehouse, databases. Schema-level create rights come with ownership.
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_QA       TO ROLE SBX_CICD_PIPELINE;
+GRANT USAGE ON DATABASE SBX_PROD     TO ROLE SBX_CICD_PIPELINE;
+-- Needed in Lab 2 so the pipeline role can clone a schema (LAB2_BASELINE) inside SBX_INT
+GRANT CREATE SCHEMA ON DATABASE SBX_INT TO ROLE SBX_CICD_PIPELINE;
+
+-- Explicit teaching line: schema owners do not need it, shown so you see the privilege (TC-G14)
+-- GRANT CREATE HYBRID TABLE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;   -- TO-CONFIRM TC-G14
+
+-- DCM project creation privilege (owners do not strictly need it; explicit for learning)
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.CALC_SUPPORT  TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_QA.CALC_SUPPORT   TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_PROD.CALC_SUPPORT TO ROLE SBX_CICD_PIPELINE;
+GRANT CREATE DCM PROJECT ON SCHEMA SBX_INT.LAB3_SCRATCH  TO ROLE SBX_CICD_PIPELINE;
+
+-- Developer role
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT          TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_DEV_SUPPORT      TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON SCHEMA SBX_INT_FIN.FIN_CALCULATION   TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON ALL TABLES    IN SCHEMA SBX_INT.CALC_SUPPORT        TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA SBX_INT.CALC_SUPPORT        TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON ALL TABLES    IN SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CALC_DEV;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE PROCEDURES IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE FUNCTIONS  IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+GRANT USAGE ON FUTURE SEQUENCES  IN SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_DEV;
+-- USAGE on CREATE_CALC_DEV_CLONE(VARCHAR) and DROP_CALC_DEV_CLONE(VARCHAR) is granted by
+-- sql/clone_support/calc_dev_clone_procs.sql after each CREATE OR REPLACE (Lab 5).
+
+-- App role and read role: schema-level access only.
+-- Table-level grants are explicit per table (DCM access.sql in Lab 3, Flyway migrations in Lab 4),
+-- NOT future grants, so Lab 7 can give the audit table INSERT+SELECT only.
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON DATABASE SBX_INT_FIN  TO ROLE SBX_FN_CALC_ENGINE_NP;
+GRANT USAGE ON SCHEMA SBX_INT_FIN.FIN_CALCULATION TO ROLE SBX_FN_CALC_ENGINE_NP;
+
+GRANT USAGE ON WAREHOUSE SBX_CALC_WH TO ROLE SBX_CALC_READER;
+GRANT USAGE ON DATABASE SBX_INT      TO ROLE SBX_CALC_READER;
+GRANT USAGE ON SCHEMA SBX_INT.CALC_SUPPORT TO ROLE SBX_CALC_READER;
+
+-- ---------------------------------------------------------------------
+-- PART 5 (SBX_CICD_PIPELINE): the results table that EDP's own Flyway owns in NAIC
+-- Created here by the platform lane so the sandbox has something to write to.
+-- ---------------------------------------------------------------------
+USE ROLE SBX_CICD_PIPELINE;
+
+CREATE TABLE IF NOT EXISTS SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE (
+  RESULT_ID    NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1 NOORDER,
+  CALC_ID      NUMBER(38,0),
+  EXECUTION_ID NUMBER(38,0),
+  VALUE_NUMBER NUMBER(38,6),
+  LOADED_AT    TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+  PRIMARY KEY (RESULT_ID)
+);
+
+GRANT INSERT, SELECT ON TABLE SBX_INT_FIN.FIN_CALCULATION.FIN_CALCULATION_RESULT_BASE
+  TO ROLE SBX_FN_CALC_ENGINE_NP;
+
+-- ---------------------------------------------------------------------
+-- PART 6 (SECURITYADMIN): service user for automation (key pair, no password)
+-- Run this part after generating the key pair. Replace <PUBLIC_KEY_BODY>
+-- with the one-line key body (no BEGIN/END lines).
+-- ---------------------------------------------------------------------
+USE ROLE SECURITYADMIN;
+
+CREATE USER IF NOT EXISTS SBX_SVC_CICD
+  TYPE              = SERVICE
+  DEFAULT_ROLE      = SBX_CICD_PIPELINE
+  DEFAULT_WAREHOUSE = SBX_CALC_WH
+  COMMENT           = 'Automation identity used by GitHub Actions and the sbx_cicd connection';
+
+GRANT ROLE SBX_CICD_PIPELINE TO USER SBX_SVC_CICD;
+
+ALTER USER SBX_SVC_CICD SET RSA_PUBLIC_KEY = '<PUBLIC_KEY_BODY>';
+
+-- ---------------------------------------------------------------------
+-- PART 7: checks (read-only)
+-- ---------------------------------------------------------------------
+SHOW GRANTS TO ROLE SBX_CICD_PIPELINE;
+SHOW SCHEMAS IN DATABASE SBX_INT;
+DESC USER SBX_SVC_CICD;   -- RSA_PUBLIC_KEY_FP must be filled
