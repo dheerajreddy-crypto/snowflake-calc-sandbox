@@ -204,7 +204,7 @@ You should see: a version number 3.33.0 (or newer if you changed the pin) and a 
 The pack uses Docker, so there is nothing to install except Docker itself. Pin the version, never `latest`. Docker usage seen in the docs: mount your project folder and set the working directory:
 
 ```bash
-docker run --rm -v "$PWD/flyway/lab2_scratch:/flyway/project" redgate/flyway:13.12.2 -workingDirectory=project info
+docker run --rm -v "$PWD/flyway/lab2_scratch:/flyway/project" flyway/flyway:13.12.2 -workingDirectory=project info
 ```
 
 Create a shell helper so later labs are shorter. Terminal (add to your shell profile if you like):
@@ -219,17 +219,17 @@ fw () {  # usage: fw <project-folder> <flyway arguments...>
     -e PRIVATE_KEY_PASSPHRASE \
     -e FLYWAY_URL -e FLYWAY_LOCATIONS -e FLYWAY_OUT_OF_ORDER -e FLYWAY_CLEAN_DISABLED \
     -e FLYWAY_PLACEHOLDERS_CALC_DB -e FLYWAY_PLACEHOLDERS_CALC_SCHEMA \
-    "redgate/flyway:${FLYWAY_VERSION}" -workingDirectory=project "$@"
+    "flyway/flyway:${FLYWAY_VERSION}" -workingDirectory=project "$@"
 }
 ```
 
 Check it with `fw flyway/lab2_scratch -v` after the repository exists (Lab 2 does this again).
 
-> **TO-CONFIRM [TC-02-04]:** that the Docker image accepts `-v` as the version flag and that the environment variable pass-through above works as written. How to check: run `docker run --rm redgate/flyway:13.12.2 -v`. Record in file 13. Fallback: download the Flyway command-line archive from the Redgate site and run `flyway -v` locally; adjust `fw` to call it.
+> **TO-CONFIRM [TC-02-04]:** that the Docker image accepts `-v` as the version flag and that the environment variable pass-through above works as written. How to check: run `docker run --rm flyway/flyway:13.12.2 -v`. Record in file 13. (Learner result 2026-11-16: `redgate/flyway:13.12.2` has no arm64 build on Apple Silicon; use `flyway/flyway:13.12.2`. See TC-02-04.) Fallback: download the Flyway command-line archive from the Redgate site and run `flyway -v` locally; adjust `fw` to call it.
 
 > **TO-CONFIRM [TC-G21]:** the JVM flag for encrypted private keys. The Snowflake driver page says encrypted keys on Linux may need `JAVA_OPTS='-Dnet.snowflake.jdbc.useBundledBouncyCastleForPrivateKeyDecryption=true'`. How to check: if `flyway info` fails with a key-decryption error, add `-e JAVA_OPTS` to `fw` and set that value. Record in file 13. Fallback for the sandbox only: use a second, unencrypted key kept outside the repository.
 
-Optional: pin by digest. Seen on 2026-11-16 (re-check): `redgate/flyway:13.12.2` manifest-list digest `sha256:ccc7fe019c49ea1f7d1a63bab7c4f5d490570783cc0ccf8edccc49a209f5f7c0`.
+Optional: pin by digest. Note: this digest is for the `redgate/flyway` image, which has no arm64 build; read the digest of `flyway/flyway:13.12.2` yourself before using one. Seen on 2026-11-16 (re-check): `redgate/flyway:13.12.2` manifest-list digest `sha256:ccc7fe019c49ea1f7d1a63bab7c4f5d490570783cc0ccf8edccc49a209f5f7c0`.
 
 ### Snowflake CLI connections
 

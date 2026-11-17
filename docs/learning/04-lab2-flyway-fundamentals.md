@@ -16,7 +16,7 @@ Run in: **Terminal** (repository folder, venv active) and **Snowsight worksheet*
 
 ```bash
 snow connection test -c sbx_owner
-docker run --rm redgate/flyway:13.12.2 -v     # TO-CONFIRM TC-02-04
+docker run --rm flyway/flyway:13.12.2 -v     # confirmed on Apple Silicon, see TC-02-04
 ```
 
 ```sql

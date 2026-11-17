@@ -133,12 +133,12 @@ How to resume in a later session: paste the same prompt, say which row of the Re
 
 Tick each box (edit this file in your copy) when done.
 
-- [ ] Read 00 and 01
-- [ ] 02: trial account created, MFA set, resource monitor active
-- [ ] 02: `snow`, Flyway and git installed and verified
-- [ ] 02: key pair generated, public key registered, secrets set in GitHub
+- [x] Read 00 and 01
+- [x] 02: trial account created, MFA set, resource monitor active
+- [x] 02: `snow`, Flyway and git installed and verified
+- [x] 02: key pair generated, public key registered, secrets set in GitHub
 - [ ] 02: bootstrap SQL run, repository created with the folder tree
-- [ ] 02: probes run, `HYBRID_MODE` and `DCM_MODE` recorded
+- [x] 02: probes run, `HYBRID_MODE` and `DCM_MODE` recorded
 - [ ] Lab 1 (03): old way done, pain points written
 - [ ] Lab 2 (04): Flyway fundamentals done
 - [ ] Lab 3 (05): DCM fundamentals done, Lab 1 objects adopted
@@ -156,9 +156,9 @@ Update this table at the end of every session. Keep one row per file.
 
 | Step | Status (todo/doing/done) | Date | Mode (H/S, D) | Notes |
 |---|---|---|---|---|
-| 00 Start here | todo | | | |
-| 01 Context | todo | | | |
-| 02 Accounts and setup | todo | | | |Mode not yet probed. Done: trial, MFA, snow 3.33.0, Docker + Flyway image (flyway/flyway:13.12.2), key pair, bootstrap parts 1-7, key-pair login as SBX_SVC_CICD works with flags. connections.toml done: sbx_dev, sbx_owner, sbx_cicd tested OK (sbx_admin skipped; personal key sbx_dheeraj_rsa_key, login name in `user`). Todo: probes H and D, GitHub repo + .gitignore + secrets, verification checklist. |
+| 00 Start here | done | 2026-11-16 | | |
+| 01 Context | done | 2026-11-16 | | |
+| 02 Accounts and setup | doing | 2026-11-17 | S, D | Trial created 2026-11-16 (AWS, AWS_US_EAST_2, Enterprise; no choice offered at sign-up). HYBRID_MODE=S, DCM_MODE=on. snow 3.33.0 (venv ~/.snowflake-sandbox/venv), Flyway image `flyway/flyway:13.12.2` (the redgate image has no arm64 build). Bootstrap parts 1 to 7 run. Connections sbx_dev, sbx_owner, sbx_cicd tested OK (sbx_admin skipped; `user` in connections.toml is the LOGIN NAME). GitHub secrets and variables set. Left: commit/push the skeleton, final checklist. |
 | 03 Lab 1 the old way | todo | | | |
 | 04 Lab 2 Flyway fundamentals | todo | | | |
 | 05 Lab 3 DCM fundamentals | todo | | | |

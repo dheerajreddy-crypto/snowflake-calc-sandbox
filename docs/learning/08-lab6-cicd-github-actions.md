@@ -29,7 +29,7 @@ Run in: **Terminal** (in the clone `snowflake-calc-sandbox`).
 ```bash
 snow --version                              # expect 3.24.0 or higher; the pack pins 3.33.0
 snow connection test -c sbx_cicd            # expect: connection OK for SBX_SVC_CICD
-docker run --rm redgate/flyway:13.12.2 -v   # expect: a Flyway 13.12.2 version banner
+docker run --rm flyway/flyway:13.12.2 -v   # expect: a Flyway 13.12.2 version banner
 ls scripts/refresh_dev_clone.sh sql/clone_support/calc_dev_clone_procs.sql
 ```
 
@@ -218,7 +218,7 @@ print("re-plan is empty: definitions and live objects agree")
 set -euo pipefail
 : "${FLY_DB:?set FLY_DB}" "${KEY_FILE:?set KEY_FILE}"
 : "${SNOWFLAKE_ACCOUNT:?}" "${SNOWFLAKE_WAREHOUSE:?}" "${SNOWFLAKE_ROLE:?}"
-IMAGE="${FLY_IMAGE:-redgate/flyway:13.12.2}"      # pin by digest too, see section 5.14
+IMAGE="${FLY_IMAGE:-flyway/flyway:13.12.2}"      # pin by digest too, see section 5.14
 if [ "${HYBRID_MODE:-H}" = "H" ]; then
   LOC="filesystem:migrations/common,filesystem:migrations/hybrid"
 else

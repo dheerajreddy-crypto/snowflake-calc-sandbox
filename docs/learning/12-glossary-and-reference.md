@@ -147,14 +147,14 @@ Manifest keys: `manifest_version: 2`, `type: DCM_PROJECT`, `default_target`, `ta
 
 | Task | Command |
 |---|---|
-| Version | `flyway -v` (Docker: `docker run --rm redgate/flyway:13.12.2 -v`) |
+| Version | `flyway -v` (Docker: `docker run --rm flyway/flyway:13.12.2 -v`) |
 | Show status | `flyway info` |
 | Check applied vs files | `flyway validate` |
 | Apply pending | `flyway migrate` |
 | Mark existing database | `flyway baseline -baselineVersion=<n> -baselineDescription="<text>"` |
 | Fix history | `flyway repair` (same locations as `migrate`) |
 | Drop everything | `flyway clean` (needs `cleanDisabled = false`, never in shared environments) |
-| Run in Docker | `docker run --rm -v /abs/path/flyway:/flyway/project redgate/flyway:13.12.2 -workingDirectory=project migrate` |
+| Run in Docker | `docker run --rm -v /abs/path/flyway:/flyway/project flyway/flyway:13.12.2 -workingDirectory=project migrate` |
 
 Naming: `V<version>__<description>.sql` (two underscores), `R__<description>.sql`, `U<version>__...` is Teams. Versions may be `1`, `2`, `3_1`. Pack rule: lower-case snake_case descriptions.
 
